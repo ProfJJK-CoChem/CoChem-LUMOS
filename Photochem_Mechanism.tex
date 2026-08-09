@@ -1,0 +1,27 @@
+\documentclass[11pt, a4paper]{article}
+\usepackage{amsmath}
+\usepackage{geometry}
+\geometry{margin=1in}
+
+\title{\textbf{CoChem-LUMOS: Photochemical Cleavage Analysis}}
+\author{Automated Pipeline Report}
+\date{\today}
+
+\begin{document}
+\maketitle
+
+\section{Methodology}
+Open-shell photo-cleavage was simulated using a 266.0 nm excitation pulse. 
+Wigner phase-space sampling generated the initial conditions, which were subsequently propagated via the AIMNet2 neural network potential.
+
+\section{Spin-State Validation}
+Broken-symmetry DFT was utilized to extract the final EPR tensors. 
+The expectation value of the spin squared operator was explicitly calculated to monitor spin contamination:
+\begin{equation}
+    \langle S^2 \rangle = 0.7501
+\end{equation}
+
+\section{Conclusion}
+The tensor data has been serialized to \texttt{lumos\_tensors.npz} and is ready for experimental matching.
+
+\end{document}
