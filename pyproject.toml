@@ -1,0 +1,21 @@
+[build-system]
+requires = ["setuptools>=61.0"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "cochem-lumos"
+version = "4.0.0"
+description = "CoChem-LUMOS: Photochemical Cleavage, Wigner Phase-Space Dynamics and Radical EPR Tensor Engine"
+readme = "README.md"
+requires-python = ">=3.9"
+dependencies = [
+    "numpy>=1.20.0",
+    "scipy>=1.7.0",
+    "h5py>=3.0.0"
+]
+
+[project.optional-dependencies]
+viz = ["py3Dmol>=2.0.0", "matplotlib>=3.5.0"]
+
+[tool.setuptools.packages.find]
+where = ["."]
