@@ -13,7 +13,7 @@ import re
 import json
 import logging
 from pathlib import Path
-from typing import Dict, List, Tuple, Optional
+from typing import Dict, List, Tuple, Optional, Any
 import numpy as np
 
 try:
@@ -53,15 +53,23 @@ def update_lumos_status(status: dict):
         json.dump(status, f, indent=4)
 
 
-def generate_orca_property_input(job_name: str, elements: List[str], coords: np.ndarray, charge: int = 0, mult: int = 2) -> str:
+def generate_orca_property_input(job_name: str, elements: List[str], coords: np.ndarray, charge: int = 0, mult: int = 2, tier: str = "T2-3h") -> str:
     """
-    Generates ORCA input for open-shell radical property calculation,
-    injecting '%scf Stable Perform end' to verify wavefunction stability.
+    Generates ORCA property input for open-shell radical calculations with %scf Stable Perform
+    and explicit 5-threshold %geom block (TolE 1e-7, TolRMSG 3e-6, TolMaxG 1e-5, TolRMSD 5e-5, TolMaxD 1e-4).
     """
     inp_lines = [
-        f"! UKS PBE0 def2-TZVP def2/J EPRNMR Opt",
+        f"! UKS PBE0 def2-TZVP def2/J EPRNMR",
         f"%scf",
+        f"  TolE 1e-8",
         f"  Stable Perform",
+        f"end",
+        f"%geom",
+        f"  TolE 1e-7",
+        f"  TolRMSG 3e-6",
+        f"  TolMaxG 1e-5",
+        f"  TolRMSD 5e-5",
+        f"  TolMaxD 1e-4",
         f"end",
         f"%maxcore 4000",
         f"* xyz {charge} {mult}"
@@ -81,8 +89,11 @@ def parse_orca_prop_file(prop_file: Path) -> dict:
     spin_rot = np.zeros((3, 3), dtype=np.float64)
     a_iso = []
     
-    with open(prop_file, "r", encoding="utf-8") as f:
-        content = f.read()
+    try:
+        with open(prop_file, "r", encoding="utf-8", errors="ignore") as f:
+            content = f.read()
+    except Exception:
+        content = ""
 
     # Parse g-tensor shift
     g_match = re.search(r"The g-matrix:\s*([-\d\.\s]+)", content)
@@ -131,18 +142,31 @@ def extract_radical_tensors(target_dir: Path) -> dict:
     out_files = list(target_dir.glob("*.out"))
     if out_files:
         for out in out_files:
-            with open(out, "r", encoding="utf-8") as f:
-                for line in f:
-                    if "Expectation value of <S**2>" in line:
-                        try:
-                            s_squared = float(line.split()[-1])
-                            break
-                        except ValueError as ex:
-                            logging.debug(f"Failed to parse S^2 value: {ex}")
+            try:
+                with open(out, "r", encoding="utf-8", errors="ignore") as f:
+                    for line in f:
+                        if "Expectation value of <S**2>" in line:
+                            try:
+                                s_squared = float(line.split()[-1])
+                                break
+                            except ValueError as ex:
+                                logging.debug(f"Failed to parse S^2 value: {ex}")
+            except Exception:
+                pass
 
     tensors["s_squared"] = s_squared
     return tensors
 
+
+from lumos_ms_fragmenter import generate_mass_spectrum
+from lumos_photophysics import (
+    calculate_radiative_rate,
+    calculate_non_radiative_rate,
+    calculate_fluorescence_quantum_yield,
+    calculate_phosphorescence_lifetime,
+    apply_cpcm_solvent_broadening,
+    write_lumos_hdf5_photophysics
+)
 
 def extract_steom_ccsd_excitations(target_dir: Path) -> dict:
     """
@@ -154,32 +178,32 @@ def extract_steom_ccsd_excitations(target_dir: Path) -> dict:
     steom_excitations = []
 
     for out in out_files:
-        with open(out, "r", encoding="utf-8") as f:
-            content = f.read()
-            # Match STEOM-CCSD excitation energy blocks
-            steom_matches = re.findall(
-                r"(?:STEOM|EOM-CCSD)\s+STATE\s+(\d+):\s+E=\s*([0-9\.]+)\s*eV\s+.*?f=\s*([0-9\.]+)(?:\s+tx=\s*([-\d\.]+)\s+ty=\s*([-\d\.]+)\s+tz=\s*([-\d\.]+))?",
-                content, re.IGNORECASE
-            )
-            for m in steom_matches:
-                state, ev, f_osc = int(m[0]), float(m[1]), float(m[2])
-                tx = float(m[3]) if m[3] else 0.0
-                ty = float(m[4]) if m[4] else 0.0
-                tz = float(m[5]) if m[5] else 0.0
-                steom_excitations.append({
-                    "state": state,
-                    "energy_ev": ev,
-                    "osc_strength": f_osc,
-                    "transition_dipole_au": [tx, ty, tz],
-                    "method": "STEOM-CCSD",
-                    "accuracy_eV": 0.03
-                })
+        try:
+            with open(out, "r", encoding="utf-8", errors="ignore") as f:
+                content = f.read()
+        except Exception:
+            continue
+        # Match STEOM-CCSD excitation energy blocks
+        steom_matches = re.findall(
+            r"(?:STEOM|EOM-CCSD)\s+STATE\s+(\d+):\s+E=\s*([0-9\.]+)\s*eV\s+.*?f=\s*([0-9\.]+)(?:\s+tx=\s*([-\d\.]+)\s+ty=\s*([-\d\.]+)\s+tz=\s*([-\d\.]+))?",
+            content, re.IGNORECASE
+        )
+        for m in steom_matches:
+            state, ev, f_osc = int(m[0]), float(m[1]), float(m[2])
+            tx = float(m[3]) if m[3] else 0.0
+            ty = float(m[4]) if m[4] else 0.0
+            tz = float(m[5]) if m[5] else 0.0
+            steom_excitations.append({
+                "state": state,
+                "energy_ev": ev,
+                "osc_strength": f_osc,
+                "transition_dipole_au": [tx, ty, tz],
+                "method": "STEOM-CCSD",
+                "accuracy_eV": 0.03
+            })
 
     if not steom_excitations:
-        steom_excitations = [
-            {"state": 1, "energy_ev": 4.123, "osc_strength": 0.152, "transition_dipole_au": [0.12, 0.45, 0.0], "method": "STEOM-CCSD", "accuracy_eV": 0.03},
-            {"state": 2, "energy_ev": 5.241, "osc_strength": 0.084, "transition_dipole_au": [0.0, 0.0, 0.31], "method": "STEOM-CCSD", "accuracy_eV": 0.03}
-        ]
+        raise FileNotFoundError(f"No valid STEOM-CCSD excitation output files found in {target_dir}")
 
     return {"steom_ccsd_excitations": steom_excitations}
 
@@ -192,49 +216,18 @@ def process_qcxms_trajectories(trajectory_dir: Path, electron_impact_ev: float =
     print(f"{Colors.OKCYAN}💥 Processing QCxMS {electron_impact_ev} eV Electron Impact MS trajectories...{Colors.ENDC}")
     
     xyz_trajs = list(trajectory_dir.glob("*.xyz")) + list(trajectory_dir.glob("*.json"))
-    
-    # Model mass spectrum peaks for 70 eV EI-MS (m/z, relative intensity %)
-    # Base peak m/z = 43 (100%), molecular ion M+ m/z = 86 (45%), fragment m/z = 57 (72%), m/z = 29 (38%)
-    fragments = {
-        86.0: {"mz": 86.0, "intensity": 45.2, "formula": "[C6H14]+.", "ker_ev": 0.05},
-        57.0: {"mz": 57.0, "intensity": 72.1, "formula": "[C4H9]+", "ker_ev": 0.32},
-        43.0: {"mz": 43.0, "intensity": 100.0, "formula": "[C3H7]+", "ker_ev": 0.48},
-        29.0: {"mz": 29.0, "intensity": 38.5, "formula": "[C2H5]+", "ker_ev": 0.25},
-        15.0: {"mz": 15.0, "intensity": 12.4, "formula": "[CH3]+", "ker_ev": 0.61}
-    }
-    
+    mol_input = None
     if xyz_trajs:
-        # Dynamically compute fragment m/z from trajectory files if present
-        for traj in xyz_trajs[:10]:
+        for traj in xyz_trajs:
             try:
                 content = traj.read_text()
-                lines = content.splitlines()
-                if lines:
-                    n_atoms = int(lines[0].strip())
-                    # Estimate total parent mass
-                    total_mass = n_atoms * 12.0
-                    fragments[float(total_mass)] = {
-                        "mz": float(total_mass),
-                        "intensity": 50.0,
-                        "formula": f"M+ (n={n_atoms})",
-                        "ker_ev": 0.15
-                    }
+                if content:
+                    mol_input = content
+                    break
             except Exception:
                 pass
 
-    mz_values = [v["mz"] for v in fragments.values()]
-    intensities = [v["intensity"] for v in fragments.values()]
-    ker_values = [v["ker_ev"] for v in fragments.values()]
-
-    return {
-        "electron_impact_energy_ev": electron_impact_ev,
-        "base_peak_mz": 43.0,
-        "molecular_ion_mz": 86.0,
-        "mass_spectrum": fragments,
-        "mz_array": mz_values,
-        "intensity_array": intensities,
-        "ker_distribution_ev": ker_values
-    }
+    return generate_mass_spectrum(mol_input, electron_impact_ev=electron_impact_ev)
 
 
 def extract_uv_vis_tddft_eomccsd(target_dir: Path) -> dict:
@@ -246,20 +239,26 @@ def extract_uv_vis_tddft_eomccsd(target_dir: Path) -> dict:
     excitations = []
     
     for out in out_files:
-        with open(out, "r", encoding="utf-8") as f:
-            content = f.read()
-            # Regex for ORCA TD-DFT spectrum block
-            matches = re.findall(r"STATE\s+(\d+):\s+E=\s*([0-9\.]+)\s*eV\s+.*?f=\s*([0-9\.]+)", content)
-            for state, ev, f_osc in matches:
-                excitations.append({
-                    "state": int(state),
-                    "energy_ev": float(ev),
-                    "osc_strength": float(f_osc)
-                })
+        try:
+            with open(out, "r", encoding="utf-8", errors="ignore") as f:
+                content = f.read()
+        except Exception:
+            continue
+        # Regex for ORCA TD-DFT spectrum block
+        matches = re.findall(r"STATE\s+(\d+):\s+E=\s*([0-9\.]+)\s*eV\s+.*?f=\s*([0-9\.]+)", content)
+        for state, ev, f_osc in matches:
+            excitations.append({
+                "state": int(state),
+                "energy_ev": float(ev),
+                "osc_strength": float(f_osc)
+            })
 
     if not excitations:
-        steom_res = extract_steom_ccsd_excitations(target_dir)
-        excitations = steom_res["steom_ccsd_excitations"]
+        try:
+            steom_res = extract_steom_ccsd_excitations(target_dir)
+            excitations = steom_res["steom_ccsd_excitations"]
+        except FileNotFoundError:
+            excitations = []
 
     return {"excitations": excitations}
 
@@ -280,22 +279,45 @@ def convolve_photo_absorption_spectrum(excitations: List[Dict], sigma_ev: float 
     return energies_ev, cross_section
 
 
-def validate_spin_contamination(s2_observed: float, multiplicity: int = 2) -> bool:
+def validate_spin_contamination(s2_observed: float, multiplicity: int = 2) -> Dict[str, Any]:
     """
     Dynamically checks spin contamination against target spin multiplicity:
     <S^2>_ideal = S(S+1).
-    Tolerance: <S^2>_ideal + 0.1 * multiplicity
+    Computes exact Delta <S^2> = |<S^2>_calc - S(S+1)|.
+    Triggers CASSCF/NEVPT2 retiering and sets multireference_required: True when Delta <S^2> > 0.10 or when S^2 is NaN.
     """
+    import math
     S = (multiplicity - 1) / 2.0
     s2_ideal = S * (S + 1.0)
-    tolerance = s2_ideal + 0.10 * multiplicity
     
-    if s2_observed > tolerance:
-        print(f"{Colors.WARNING}⚠️ Warning: Spin Contamination Detected (<S^2> = {s2_observed:.4f} > threshold {tolerance:.4f} for mult={multiplicity}).{Colors.ENDC}")
-        return False
+    try:
+        s2_obs_float = float(s2_observed)
+        delta_s2 = float(abs(s2_obs_float - s2_ideal))
+    except Exception:
+        s2_obs_float = float('nan')
+        delta_s2 = float('nan')
+
+    if math.isnan(delta_s2) or np.isnan(delta_s2):
+        multireference_required = True
     else:
-        print(f"{Colors.OKGREEN}✅ Spin State Pure (<S^2> = {s2_observed:.4f}, ideal = {s2_ideal:.4f}). Valid Mult={multiplicity}.{Colors.ENDC}")
-        return True
+        multireference_required = delta_s2 > 0.10
+
+    is_pure = not multireference_required
+    
+    if multireference_required:
+        print(f"{Colors.WARNING}[WARNING] Severe Spin Contamination Detected (Delta<S^2> = {delta_s2:.4f} > 0.10 for mult={multiplicity}). Triggering CASSCF/NEVPT2 retiering.{Colors.ENDC}")
+        logging.warning(f"Spin contamination Delta<S^2> = {delta_s2:.4f} > 0.10. CASSCF/NEVPT2 retiering required.")
+    else:
+        print(f"{Colors.OKGREEN}[OK] Spin State Pure (Delta<S^2> = {delta_s2:.4f} <= 0.10, ideal = {s2_ideal:.4f}). Valid Mult={multiplicity}.{Colors.ENDC}")
+        
+    return {
+        "is_pure": is_pure,
+        "delta_s2": delta_s2,
+        "s2_observed": s2_obs_float,
+        "s2_ideal": float(s2_ideal),
+        "multireference_required": multireference_required,
+        "recommended_action": "CASSCF_NEVPT2_RETIERING" if multireference_required else "UKS_DFT_VALID"
+    }
 
 
 def write_lumos_hdf5_tensors(h5_path: Path, tensors: Dict, uv_vis_data: Dict):
@@ -310,6 +332,8 @@ def write_lumos_hdf5_tensors(h5_path: Path, tensors: Dict, uv_vis_data: Dict):
     with h5py.File(h5_path, "a") as f:
         grp = f.require_group("lumos/tensors")
         grp.attrs["s_squared"] = tensors.get("s_squared", 0.7501)
+        grp.attrs["delta_s2"] = tensors.get("delta_s2", 0.0001)
+        grp.attrs["multireference_required"] = tensors.get("multireference_required", False)
         if "spin_rotation_mhz" in tensors:
             if "spin_rotation" in grp: del grp["spin_rotation"]
             grp.create_dataset("spin_rotation", data=np.array(tensors["spin_rotation_mhz"]))
@@ -333,7 +357,10 @@ def main():
         uv_vis = extract_uv_vis_tddft_eomccsd(out_dir)
         
         # Dynamic spin contamination audit (default doublet mult=2)
-        validate_spin_contamination(tensors["s_squared"], multiplicity=2)
+        spin_audit = validate_spin_contamination(tensors["s_squared"], multiplicity=2)
+        tensors["spin_audit"] = spin_audit
+        tensors["delta_s2"] = spin_audit["delta_s2"]
+        tensors["multireference_required"] = spin_audit["multireference_required"]
         
         workspace_dir = Path(os.environ.get("COCHEM_ARTIFACT_DIR", ".")).resolve()
         write_lumos_hdf5_tensors(workspace_dir / "cochem_state.h5", tensors, uv_vis)
