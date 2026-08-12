@@ -1,3 +1,4 @@
+import hashlib
 #!/usr/bin/env python3
 """
 CoChem-LUMOS: Staged Visualizer & Offline Renderer
@@ -10,8 +11,9 @@ Generates valid Gaussian .cube headers/grids and includes offline Matplotlib PNG
 
 import os
 import logging
+logger = logging.getLogger(__name__)
 from pathlib import Path
-from typing import List, Optional
+from typing import Any, List, Optional
 import numpy as np
 
 try:
@@ -24,7 +26,7 @@ except ImportError:
 
 
 class LumosSpinRenderer:
-    def __init__(self, workspace_dir: Optional[Path] = None):
+    def __init__(self, workspace_dir: Optional[Path] = None) -> None:
         if workspace_dir:
             self.cube_dir = workspace_dir / "LUMOS_Workspace" / "Dynamics_Out"
         else:
@@ -42,7 +44,7 @@ class LumosSpinRenderer:
             self.output_view = widgets.Output()
             self.build_ui()
 
-    def ensure_sample_cubes(self):
+    def ensure_sample_cubes(self) -> Any:
         """Generates valid Gaussian .cube files with 3D volumetric header and grid data."""
         self.cube_dir.mkdir(parents=True, exist_ok=True)
         existing = list(self.cube_dir.glob("*.cube"))
@@ -75,7 +77,7 @@ class LumosSpinRenderer:
                     if grid_values:
                         f.write(" ".join(grid_values) + "\n")
 
-    def render_offline_contour_png(self, cube_path: Path, output_png: Path):
+    def render_offline_contour_png(self, cube_path: Path, output_png: Path) -> Any:
         """
         Renders an offline 2D/3D volumetric contour slice image using Matplotlib.
         """
@@ -100,7 +102,7 @@ class LumosSpinRenderer:
             logging.warning(f"Offline Matplotlib PNG rendering failed: {e}")
             return False
 
-    def render_batch(self):
+    def render_batch(self) -> Any:
         start_idx = self.current_page * self.page_size
         end_idx = min(start_idx + self.page_size, len(self.cube_files))
         batch = self.cube_files[start_idx:end_idx]
@@ -108,7 +110,7 @@ class LumosSpinRenderer:
         if IPYWIDGETS_AVAILABLE and hasattr(self, 'output_view'):
             with self.output_view:
                 clear_output()
-                print(f"📊 Rendering Batch {self.current_page + 1}/{self.max_page + 1} (Files {start_idx+1}-{end_idx} of {len(self.cube_files)})")
+                logger.info(f"📊 Rendering Batch {self.current_page + 1}/{self.max_page + 1} (Files {start_idx+1}-{end_idx} of {len(self.cube_files)})")
                 
                 try:
                     import py3Dmol
@@ -116,34 +118,34 @@ class LumosSpinRenderer:
                         view = py3Dmol.view(width=400, height=300)
                         view.addModel("3\nH2O Spin Density\nO 0 0 0\nH 1 0 0\nH -1 0 0", "xyz")
                         view.setStyle({'stick': {}})
-                        print(f"File: {cube.name}")
+                        logger.info(f"File: {cube.name}")
                         view.show()
                 except ImportError:
-                    print("⚠️ py3Dmol is not installed. Rendering static offline PNG fallbacks...")
+                    logger.info("⚠️ py3Dmol is not installed. Rendering static offline PNG fallbacks...")
                     for cube in batch:
                         png_out = self.cube_dir / f"{cube.stem}.png"
                         self.render_offline_contour_png(cube, png_out)
-                        print(f"   - Rendered static PNG contour: {png_out.name}")
+                        logger.info(f"   - Rendered static PNG contour: {png_out.name}")
 
-    def next_page(self, b):
+    def next_page(self, b) -> Any:
         if self.current_page < self.max_page:
             self.current_page += 1
             self.update_buttons()
             self.render_batch()
 
-    def prev_page(self, b):
+    def prev_page(self, b) -> Any:
         if self.current_page > 0:
             self.current_page -= 1
             self.update_buttons()
             self.render_batch()
 
-    def update_buttons(self):
+    def update_buttons(self) -> Any:
         if hasattr(self, 'btn_next'):
             self.btn_next.disabled = self.current_page >= self.max_page
             self.btn_prev.disabled = self.current_page <= 0
             self.lbl_page.value = f"<b>Page {self.current_page + 1} / {self.max_page + 1}</b>"
 
-    def build_ui(self):
+    def build_ui(self) -> Any:
         if not IPYWIDGETS_AVAILABLE:
             return
         self.btn_prev = widgets.Button(description="⬅️ Previous", button_style="info", disabled=True)
@@ -162,7 +164,7 @@ class LumosSpinRenderer:
             self.output_view
         ])
 
-    def render(self):
+    def render(self) -> Any:
         if IPYWIDGETS_AVAILABLE and hasattr(self, 'ui'):
             display(self.ui)
         self.render_batch()
@@ -172,4 +174,14 @@ if __name__ == "__main__":
     logging.basicConfig(level=logging.INFO)
     renderer = LumosSpinRenderer()
     renderer.render()
-    print("LUMOS Spin Renderer test passed.")
+    logger.info("LUMOS Spin Renderer test passed.")
+def calculate_artifact_sha256(filepath: str | Path) -> str:
+    """Calculates SHA-256 hash of a computational artifact."""
+    p = Path(filepath)
+    if not p.exists():
+        raise FileNotFoundError(f"Artifact file not found: {filepath}")
+    hasher = hashlib.sha256()
+    with open(p, "rb") as f:
+        while chunk := f.read(65536):
+            hasher.update(chunk)
+    return hasher.hexdigest()

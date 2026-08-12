@@ -1,3 +1,5 @@
+import hashlib
+from typing import Any, Dict, List, Optional
 #!/usr/bin/env python3
 """
 CoChem-LUMOS: Automated LaTeX & HTML Scribe
@@ -12,6 +14,7 @@ import re
 import json
 import subprocess
 import logging
+logger = logging.getLogger(__name__)
 from pathlib import Path
 
 class Colors:
@@ -85,7 +88,7 @@ Wigner phase-space sampling generated the initial conditions, which were subsequ
 \section{Spin-State Validation \& Photophysics}
 Broken-symmetry DFT was utilized to extract the final EPR tensors. 
 The expectation value of the spin squared operator was explicitly calculated to monitor spin contamination:
-\begin{equation}
+    \begin{equation}
     \langle S^2 \rangle = %S2% \text{ [D]}
 \end{equation}
 
@@ -109,7 +112,7 @@ The tensor and photophysics data with mandatory provenance tags have been serial
     return tex_template
 
 
-def generate_fallback_reports(status: dict, workspace_dir: Path):
+def generate_fallback_reports(status: dict, workspace_dir: Path) -> Any:
     """
     Generates standalone HTML and Markdown reports with mandatory provenance tags [M], [D], [E].
     """
@@ -184,11 +187,11 @@ EPR spin-rotation tensors, isotropic hyperfine constants, and g-tensors have bee
     with open(html_path, "w", encoding="utf-8") as f:
         f.write(html_content)
 
-    print(f"{Colors.OKGREEN}✅ Fallback HTML & Markdown reports with [M], [D], [E] provenance tags generated successfully at {html_path.name}{Colors.ENDC}")
+        logger.info(f"{Colors.OKGREEN}✅ Fallback HTML & Markdown reports with [M], [D], [E] provenance tags generated successfully at {html_path.name}{Colors.ENDC}")
 
 
-def main():
-    print(f"\n{Colors.OKCYAN}--- CoChem-LUMOS: Scribe Output Generator ---{Colors.ENDC}")
+def main() -> Any:
+    logger.info(f"\n{Colors.OKCYAN}--- CoChem-LUMOS: Scribe Output Generator ---{Colors.ENDC}")
     
     workspace_dir = Path(os.environ.get("COCHEM_ARTIFACT_DIR", ".")).resolve()
     status_file = workspace_dir / "LUMOS_Refinement_Status.json"
@@ -196,38 +199,47 @@ def main():
         status_file = Path("LUMOS_Refinement_Status.json")
 
     if not status_file.exists():
-        print(f"{Colors.WARNING}⚠️ LUMOS Registry missing. Creating default status for scribe.{Colors.ENDC}")
+        logger.info(f"{Colors.WARNING}⚠️ LUMOS Registry missing. Creating default status for scribe.{Colors.ENDC}")
         status = {"pump_nm": 266.0, "solvent": "water", "tensors": {"s_squared": 0.7501}}
     else:
         with open(status_file, "r") as f:
-            status = json.load(f)
+            status = json.loads(f.read())
         
     tex_out = workspace_dir / "Photochem_Mechanism.tex"
     
     latex_content = generate_latex_document(status)
     with open(tex_out, "w", encoding="utf-8") as f:
         f.write(latex_content)
-    print(f"{Colors.OKGREEN}✅ LaTeX payload generated: {tex_out.name}{Colors.ENDC}")
+    logger.info(f"{Colors.OKGREEN}✅ LaTeX payload generated: {tex_out.name}{Colors.ENDC}")
 
     # Generate fallback HTML/MD reports unconditionally so user always has valid reports
     generate_fallback_reports(status, workspace_dir)
 
     # Attempt pdflatex compilation if available
     try:
-        print("⚙️  Attempting pdflatex compilation...")
-        subprocess.run(
-            ["pdflatex", "-interaction=nonstopmode", str(tex_out)],
-            capture_output=True, text=True, check=True, cwd=str(workspace_dir)
+        logger.info("⚙️  Attempting pdflatex compilation...")
+        subprocess.run(["pdflatex", "-interaction=nonstopmode", str(tex_out)], check=True, timeout=300,
+            capture_output=True, text=True, cwd=str(workspace_dir)
         )
-        print(f"{Colors.OKGREEN}✅ PDF successfully compiled: Photochem_Mechanism.pdf{Colors.ENDC}")
+        logger.info(f"{Colors.OKGREEN}✅ PDF successfully compiled: Photochem_Mechanism.pdf{Colors.ENDC}")
         logging.info("LUMOS PDF compiled successfully.")
     except FileNotFoundError:
-        print(f"{Colors.WARNING}⚠️ 'pdflatex' not found on system path. Fallback HTML/Markdown generated.{Colors.ENDC}")
+        logger.info(f"{Colors.WARNING}⚠️ 'pdflatex' not found on system path. Fallback HTML/Markdown generated.{Colors.ENDC}")
         logging.warning("pdflatex not found. Using fallback HTML/MD reports.")
     except subprocess.CalledProcessError as e:
-        print(f"{Colors.WARNING}⚠️ LaTeX compilation encountered errors. Fallback HTML/Markdown preserved.{Colors.ENDC}")
+        logger.info(f"{Colors.WARNING}⚠️ LaTeX compilation encountered errors. Fallback HTML/Markdown preserved.{Colors.ENDC}")
         logging.error(f"pdflatex error:\n{e.stdout}")
 
 
 if __name__ == "__main__":
     main()
+def calculate_artifact_sha256(filepath: str | Path) -> str:
+    """Calculates SHA-256 hash of a computational artifact."""
+    p = Path(filepath)
+    if not p.exists():
+        raise FileNotFoundError(f"Artifact file not found: {filepath}")
+    hasher = hashlib.sha256()
+    with open(p, "rb") as f:
+        while chunk := f.read(65536):
+            hasher.update(chunk)
+    return hasher.hexdigest()

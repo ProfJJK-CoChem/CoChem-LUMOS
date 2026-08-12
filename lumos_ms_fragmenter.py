@@ -3,7 +3,7 @@
 CoChem-LUMOS: Dynamic Mass Spectrometry Fragmentation Engine
 -------------------------------------------------------------
 Simulates 70 eV Electron Impact Mass Spectrometry (EI-MS) fragmentation dynamics using:
-- Even/Odd electron rules (radical cations M+ vs even-electron cations F+)
+    - Even/Odd electron rules (radical cations M+ vs even-electron cations F+)
 - McLafferty rearrangement (SMARTS pattern matching for 6-membered cyclic H-abstraction/beta-cleavage)
 - Alpha-cleavage (heteroatom-directed C-C cleavage)
 - Bond Dissociation Energy (BDE) estimates and RRKM microcanonical rate theory
@@ -26,7 +26,7 @@ except ImportError:
 def estimate_rrkm_rate(bde_ev: float, internal_energy_ev: float = 10.0, freq_factor: float = 1e13, s_modes: int = 15) -> float:
     """
     Computes microcanonical RRKM-like fragmentation rate constant k(E):
-    k(E) = nu * ((E - E_0) / E)^(s - 1)
+        k(E) = nu * ((E - E_0) / E)^(s - 1)
     """
     if internal_energy_ev <= bde_ev or internal_energy_ev <= 0:
         return 0.0

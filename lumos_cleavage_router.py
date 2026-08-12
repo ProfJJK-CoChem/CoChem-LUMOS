@@ -1,3 +1,6 @@
+import atexit
+import psutil
+import hashlib
 #!/usr/bin/env python3
 """
 CoChem-LUMOS: Stage 1.x Gatekeeper, Quantum Wigner Sampler & FSSH Router
@@ -15,10 +18,12 @@ import re
 import json
 import argparse
 import logging
+logger = logging.getLogger(__name__)
 import subprocess
 from pathlib import Path
-from typing import List, Dict, Tuple, Optional, Callable
+from typing import Any, List, Dict, Tuple, Optional, Callable
 import numpy as np
+from cochem_base.config_loader import resolve_config_path
 
 try:
     import h5py
@@ -39,20 +44,18 @@ logging.basicConfig(filename='cochem_lumos_router.log', level=logging.INFO)
 
 
 def load_system_config() -> dict:
-    config_path = Path("cochem_system_config.json")
-    if not config_path.exists():
-        config_path = Path(__file__).parent.parent / "cochem_system_config.json"
+    config_path = resolve_config_path()
     if not config_path.exists():
         return {}
-    with open(config_path, "r") as f:
-        return json.load(f)
+    with open(config_path, "r", encoding="utf-8") as f:
+        return json.loads(f.read())
 
 
 def estimate_basis_function_count(symbols: List[str], basis_set: str = "def2-TZVP") -> int:
     """
     Computes basis function count N_bf for input geometry given basis set.
     def2-TZVP basis function counts per atom:
-    H, He: 5
+        H, He: 5
     Li-Ne (C, N, O, F, etc.): 31
     Na-Ar (P, S, Cl, etc.): 41
     K-Kr (Br, etc.): 51
@@ -103,7 +106,7 @@ def resolve_tier_wigner_samples(tier: str = "T1-30min", user_samples: Optional[i
 def determine_gpu_crossover(symbols: List[str], basis_set: str = "def2-TZVP") -> Tuple[str, int]:
     """
     GPU crossover gating rule:
-    N_bf < 50  -> CPU_LOCAL (8 P-cores, KMP_HW_SUBSET=8c:intel_core,1t)
+        N_bf < 50  -> CPU_LOCAL (8 P-cores, KMP_HW_SUBSET=8c:intel_core,1t)
     N_bf >= 50 -> GPU_MPS_MULTIPLEX (CUDA MPS multiplexing)
     """
     n_bf = estimate_basis_function_count(symbols, basis_set)
@@ -122,7 +125,7 @@ def generate_wigner_samples(base_geometry: Path, num_samples: Optional[int] = No
     and Gaussian quantum harmonic oscillator displacement/momentum distributions.
     """
     resolved_samples = resolve_tier_wigner_samples(tier, num_samples)
-    print(f"🎲 Generating {resolved_samples} quantum Wigner phase-space trajectories for tier {tier} at {temperature} K...")
+    logger.info(f"🎲 Generating {resolved_samples} quantum Wigner phase-space trajectories for tier {tier} at {temperature} K...")
     sample_paths = []
     
     workspace_dir = Path(os.environ.get("COCHEM_ARTIFACT_DIR", ".")).resolve()
@@ -242,8 +245,8 @@ def route_to_aimnet2_silo(trajectories: List[str], solvent: str = "water", symbo
     mps_cfg = hardware_cfg.get("mps", {})
     core_pinning = hardware_cfg.get("core_pinning", {})
 
-    print(f"[NODE] Dispatching {len(trajectories)} trajectories to AIMNet2 Micro-Silo (Solvent: {solvent})...")
-    print(f"  [NODE Router] Basis Functions N_bf={n_bf} -> Crossover Mode: {crossover_mode}")
+    logger.info(f"[NODE] Dispatching {len(trajectories)} trajectories to AIMNet2 Micro-Silo (Solvent: {solvent})...")
+    logger.info(f"  [NODE Router] Basis Functions N_bf={n_bf} -> Crossover Mode: {crossover_mode}")
 
     env = os.environ.copy()
     if crossover_mode == "CPU_LOCAL":
@@ -262,7 +265,7 @@ def route_to_aimnet2_silo(trajectories: List[str], solvent: str = "water", symbo
         proc = subprocess.Popen(cmd, stdout=subprocess.PIPE, stderr=subprocess.PIPE, env=env)
         stdout, stderr = proc.communicate(timeout=5)
         logging.info(f"NODE AIMNet2 Silo dispatched {len(trajectories)} jobs (Mode: {crossover_mode}, N_bf: {n_bf}, PID: {proc.pid}). Output: {stdout.decode().strip()}")
-        print(f"{Colors.OKGREEN}[OK] AIMNet2 NODE background dispatch complete (Mode: {crossover_mode}, N_bf: {n_bf}, PID {proc.pid}).{Colors.ENDC}")
+        logger.info(f"{Colors.OKGREEN}[OK] AIMNet2 NODE background dispatch complete (Mode: {crossover_mode}, N_bf: {n_bf}, PID {proc.pid}).{Colors.ENDC}")
         return True
     except Exception as e:
         logging.error(f"Failed to execute AIMNet2 NODE dispatch: {e}")
@@ -327,7 +330,7 @@ def optimize_mecp_geometry(coords: np.ndarray, grad_s0_fn: Callable, grad_s1_fn:
     return cur_coords, float(min_gap)
 
 
-def write_lumos_hdf5_state(h5_path: Path, trajectories: List[str], status_data: Dict):
+def write_lumos_hdf5_state(h5_path: Path, trajectories: List[str], status_data: Dict) -> Any:
     """
     Serializes LUMOS trajectory registry into cochem_state.h5 at /lumos/trajectories/.
     """
@@ -348,7 +351,7 @@ def write_lumos_hdf5_state(h5_path: Path, trajectories: List[str], status_data: 
     logging.info(f"Serialized LUMOS state to {h5_path.name} (/lumos/trajectories/).")
 
 
-def main():
+def main() -> Any:
     parser = argparse.ArgumentParser(description="CoChem-LUMOS Photochemical Cleavage Router")
     parser.add_argument("--pump-nm", type=float, default=266.0, help="Pump laser wavelength in nm")
     parser.add_argument("--temp-k", type=float, default=298.15, help="Thermal bath temperature in K")
@@ -358,8 +361,8 @@ def main():
     parser.add_argument("--input-xyz", type=str, default="optimized_ground_state.xyz", help="Base geometry XYZ path")
     args = parser.parse_args()
 
-    print(f"\n{Colors.HEADER}--- CoChem-LUMOS: Photochemical Cleavage Router ---{Colors.ENDC}")
-    print(f"⚡ Pump Energy: {args.pump_nm} nm  |  Thermal Bath: {args.temp_k} K  |  Tier: {args.tier}  |  Solvent: {args.solvent}")
+    logger.info(f"\n{Colors.HEADER}--- CoChem-LUMOS: Photochemical Cleavage Router ---{Colors.ENDC}")
+    logger.info(f"⚡ Pump Energy: {args.pump_nm} nm  |  Thermal Bath: {args.temp_k} K  |  Tier: {args.tier}  |  Solvent: {args.solvent}")
     
     sample_input = Path(args.input_xyz)
     symbols = ["O", "H", "H"]
@@ -398,8 +401,18 @@ def main():
             
         write_lumos_hdf5_state(workspace_dir / "cochem_state.h5", trajectories, status)
             
-        print(f"{Colors.OKGREEN}✅ LUMOS Stage 1.x Complete. Refinement Status locked.{Colors.ENDC}\n")
+        logger.info(f"{Colors.OKGREEN}✅ LUMOS Stage 1.x Complete. Refinement Status locked.{Colors.ENDC}\n")
 
 
 if __name__ == "__main__":
     main()
+def calculate_artifact_sha256(filepath: str | Path) -> str:
+    """Calculates SHA-256 hash of a computational artifact."""
+    p = Path(filepath)
+    if not p.exists():
+        raise FileNotFoundError(f"Artifact file not found: {filepath}")
+    hasher = hashlib.sha256()
+    with open(p, "rb") as f:
+        while chunk := f.read(65536):
+            hasher.update(chunk)
+    return hasher.hexdigest()

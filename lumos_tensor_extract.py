@@ -1,3 +1,4 @@
+import hashlib
 #!/usr/bin/env python3
 """
 CoChem-LUMOS: Stage 3.x Quantum Tensor Extractor
@@ -12,6 +13,7 @@ import sys
 import re
 import json
 import logging
+logger = logging.getLogger(__name__)
 from pathlib import Path
 from typing import Dict, List, Tuple, Optional, Any
 import numpy as np
@@ -43,10 +45,10 @@ def load_lumos_status() -> dict:
     if not status_path.exists():
         return {"status": "INITIALIZED", "output_dir": str(workspace_dir / "LUMOS_Workspace" / "Dynamics_Out")}
     with open(status_path, "r") as f:
-        return json.load(f)
+        return json.loads(f.read())
 
 
-def update_lumos_status(status: dict):
+def update_lumos_status(status: dict) -> Any:
     workspace_dir = Path(os.environ.get("COCHEM_ARTIFACT_DIR", ".")).resolve()
     status_path = workspace_dir / "LUMOS_Refinement_Status.json"
     with open(status_path, "w") as f:
@@ -59,7 +61,7 @@ def generate_orca_property_input(job_name: str, elements: List[str], coords: np.
     and explicit 5-threshold %geom block (TolE 1e-7, TolRMSG 3e-6, TolMaxG 1e-5, TolRMSD 5e-5, TolMaxD 1e-4).
     """
     inp_lines = [
-        f"! UKS PBE0 def2-TZVP def2/J EPRNMR",
+        f"! UKS PBE0 D3BJ def2-TZVP def2/J EPRNMR",
         f"%scf",
         f"  TolE 1e-8",
         f"  Stable Perform",
@@ -173,7 +175,7 @@ def extract_steom_ccsd_excitations(target_dir: Path) -> dict:
     Extracts STEOM-CCSD vertical excitation energies (accurate to 0.03 eV),
     transition electric dipoles, and oscillator strengths for optical spectroscopy.
     """
-    print(f"{Colors.OKCYAN}📡 Extracting STEOM-CCSD vertical excitations (0.03 eV target precision)...{Colors.ENDC}")
+    logger.info(f"{Colors.OKCYAN}📡 Extracting STEOM-CCSD vertical excitations (0.03 eV target precision)...{Colors.ENDC}")
     out_files = list(target_dir.glob("*.out")) + list(target_dir.glob("*.log"))
     steom_excitations = []
 
@@ -213,7 +215,7 @@ def process_qcxms_trajectories(trajectory_dir: Path, electron_impact_ev: float =
     Processes QCxMS non-equilibrium MD trajectories for 70 eV electron impact mass spectrometry (EI-MS).
     Extracts m/z fragment ion abundances, charge distributions, and Kinetic Energy Release (KER) distributions.
     """
-    print(f"{Colors.OKCYAN}💥 Processing QCxMS {electron_impact_ev} eV Electron Impact MS trajectories...{Colors.ENDC}")
+    logger.info(f"{Colors.OKCYAN}💥 Processing QCxMS {electron_impact_ev} eV Electron Impact MS trajectories...{Colors.ENDC}")
     
     xyz_trajs = list(trajectory_dir.glob("*.xyz")) + list(trajectory_dir.glob("*.json"))
     mol_input = None
@@ -234,7 +236,7 @@ def extract_uv_vis_tddft_eomccsd(target_dir: Path) -> dict:
     """
     Extracts TD-DFT / EOM-CCSD electronic roots, transition dipoles, and oscillator strengths.
     """
-    print(f"{Colors.OKCYAN}📡 Extracting TD-DFT/EOM-CCSD UV/Vis spectra...{Colors.ENDC}")
+    logger.info(f"{Colors.OKCYAN}📡 Extracting TD-DFT/EOM-CCSD UV/Vis spectra...{Colors.ENDC}")
     out_files = list(target_dir.glob("*.out"))
     excitations = []
     
@@ -282,7 +284,7 @@ def convolve_photo_absorption_spectrum(excitations: List[Dict], sigma_ev: float 
 def validate_spin_contamination(s2_observed: float, multiplicity: int = 2) -> Dict[str, Any]:
     """
     Dynamically checks spin contamination against target spin multiplicity:
-    <S^2>_ideal = S(S+1).
+        <S^2>_ideal = S(S+1).
     Computes exact Delta <S^2> = |<S^2>_calc - S(S+1)|.
     Triggers CASSCF/NEVPT2 retiering and sets multireference_required: True when Delta <S^2> > 0.10 or when S^2 is NaN.
     """
@@ -305,10 +307,10 @@ def validate_spin_contamination(s2_observed: float, multiplicity: int = 2) -> Di
     is_pure = not multireference_required
     
     if multireference_required:
-        print(f"{Colors.WARNING}[WARNING] Severe Spin Contamination Detected (Delta<S^2> = {delta_s2:.4f} > 0.10 for mult={multiplicity}). Triggering CASSCF/NEVPT2 retiering.{Colors.ENDC}")
+        logger.info(f"{Colors.WARNING}[WARNING] Severe Spin Contamination Detected (Delta<S^2> = {delta_s2:.4f} > 0.10 for mult={multiplicity}). Triggering CASSCF/NEVPT2 retiering.{Colors.ENDC}")
         logging.warning(f"Spin contamination Delta<S^2> = {delta_s2:.4f} > 0.10. CASSCF/NEVPT2 retiering required.")
     else:
-        print(f"{Colors.OKGREEN}[OK] Spin State Pure (Delta<S^2> = {delta_s2:.4f} <= 0.10, ideal = {s2_ideal:.4f}). Valid Mult={multiplicity}.{Colors.ENDC}")
+        logger.info(f"{Colors.OKGREEN}[OK] Spin State Pure (Delta<S^2> = {delta_s2:.4f} <= 0.10, ideal = {s2_ideal:.4f}). Valid Mult={multiplicity}.{Colors.ENDC}")
         
     return {
         "is_pure": is_pure,
@@ -320,7 +322,7 @@ def validate_spin_contamination(s2_observed: float, multiplicity: int = 2) -> Di
     }
 
 
-def write_lumos_hdf5_tensors(h5_path: Path, tensors: Dict, uv_vis_data: Dict):
+def write_lumos_hdf5_tensors(h5_path: Path, tensors: Dict, uv_vis_data: Dict) -> Any:
     """
     Serializes extracted quantum tensors into cochem_state.h5 at /lumos/tensors/.
     """
@@ -344,14 +346,14 @@ def write_lumos_hdf5_tensors(h5_path: Path, tensors: Dict, uv_vis_data: Dict):
     logging.info(f"Serialized LUMOS tensors to {h5_path.name} (/lumos/tensors/).")
 
 
-def main():
-    print(f"\n{Colors.OKCYAN}--- CoChem-LUMOS: Open-Shell Tensor Extraction ---{Colors.ENDC}")
+def main() -> Any:
+    logger.info(f"\n{Colors.OKCYAN}--- CoChem-LUMOS: Open-Shell Tensor Extraction ---{Colors.ENDC}")
     
     try:
         status = load_lumos_status()
         out_dir = Path(status.get("output_dir", "./LUMOS_Workspace/Dynamics_Out"))
         
-        print(f"📥 Scanning {out_dir} for radical product tensors...")
+        logger.info(f"📥 Scanning {out_dir} for radical product tensors...")
         
         tensors = extract_radical_tensors(out_dir)
         uv_vis = extract_uv_vis_tddft_eomccsd(out_dir)
@@ -370,13 +372,23 @@ def main():
         status["status"] = "TENSORS_EXTRACTED"
         update_lumos_status(status)
         
-        print(f"{Colors.OKGREEN}✅ Tensor Extraction Complete. Float64 bounds strictly enforced.{Colors.ENDC}\n")
+        logger.info(f"{Colors.OKGREEN}✅ Tensor Extraction Complete. Float64 bounds strictly enforced.{Colors.ENDC}\n")
         logging.info("LUMOS Tensors extracted and verified.")
         
     except Exception as e:
-        print(f"{Colors.FAIL}❌ Extraction Failed: {str(e)}{Colors.ENDC}")
+        logger.info(f"{Colors.FAIL}❌ Extraction Failed: {str(e)}{Colors.ENDC}")
         logging.error(f"LUMOS Tensor Extraction Error: {str(e)}")
 
 
 if __name__ == "__main__":
     main()
+def calculate_artifact_sha256(filepath: str | Path) -> str:
+    """Calculates SHA-256 hash of a computational artifact."""
+    p = Path(filepath)
+    if not p.exists():
+        raise FileNotFoundError(f"Artifact file not found: {filepath}")
+    hasher = hashlib.sha256()
+    with open(p, "rb") as f:
+        while chunk := f.read(65536):
+            hasher.update(chunk)
+    return hasher.hexdigest()

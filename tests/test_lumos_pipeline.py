@@ -1,9 +1,11 @@
+import hashlib
+from typing import Any, Dict, List, Optional
 #!/usr/bin/env python3
 """
 CoChem-LUMOS Automated PyTest Suite
 -----------------------------------
 Validates all 20 LUMOS items:
-- Wigner phase-space sampling with quantum harmonic oscillator widths
+    - Wigner phase-space sampling with quantum harmonic oscillator widths
 - Parameter ingestion via argparse/JSON
 - AIMNet2 micro-silo background subprocess routing with solvent CPCM options
 - LaTeX string sanitization escaping
@@ -50,7 +52,7 @@ from lumos_tensor_extract import (
 )
 
 
-def test_wigner_sampling_and_silo(tmp_path):
+def test_wigner_sampling_and_silo(tmp_path) -> None:
     # LUMOS-01: Wigner quantum sampling
     samples = generate_wigner_samples(tmp_path / "input.xyz", num_samples=3, temperature=298.15)
     assert len(samples) == 3
@@ -61,22 +63,22 @@ def test_wigner_sampling_and_silo(tmp_path):
     assert res is True
 
 
-def test_fssh_and_mecp():
+def test_fssh_and_mecp() -> None:
     # LUMOS-11: FSSH probability
     p_fssh = evaluate_fssh_switch_probability(0, 1, np.array([0.7, 0.7]), np.array([0.1, 0.1, 0.0]), np.array([10.0, 0.0, 0.0]), dt=0.5)
     assert 0.0 <= p_fssh <= 1.0
 
     # LUMOS-12: MECP Optimization
     coords = np.array([[0.0,0.0,0.0], [0.0,0.0,1.2]])
-    def g0(c): return 2.0 * c
-    def g1(c): return 2.0 * (c - 0.1)
-    def e0(c): return float(np.sum(c**2))
-    def e1(c): return float(np.sum((c - 0.1)**2))
+    def g0(c) -> Any: return 2.0 * c
+    def g1(c) -> Any: return 2.0 * (c - 0.1)
+    def e0(c) -> Any: return float(np.sum(c**2))
+    def e1(c) -> Any: return float(np.sum((c - 0.1)**2))
     mecp_c, gap = optimize_mecp_geometry(coords, g0, g1, e0, e1, max_iter=3)
     assert mecp_c.shape == coords.shape
 
 
-def test_scribe_sanitization_and_fallbacks(tmp_path):
+def test_scribe_sanitization_and_fallbacks(tmp_path) -> None:
     # LUMOS-04: LaTeX sanitization
     raw_str = "Ratio_10% & #1_tag"
     san = sanitize_latex_string(raw_str)
@@ -89,7 +91,7 @@ def test_scribe_sanitization_and_fallbacks(tmp_path):
     assert (tmp_path / "Photochem_Mechanism.md").exists()
 
 
-def test_spin_renderer_and_cubes(tmp_path):
+def test_spin_renderer_and_cubes(tmp_path) -> None:
     # LUMOS-06, 07, 18: Spin renderer & valid cube headers
     renderer = LumosSpinRenderer(workspace_dir=tmp_path)
     assert len(renderer.cube_files) == 12
@@ -103,7 +105,7 @@ def test_spin_renderer_and_cubes(tmp_path):
     assert png_out.exists() or not png_out.exists() # Should not crash
 
 
-def test_tensor_extraction_and_convolution(tmp_path):
+def test_tensor_extraction_and_convolution(tmp_path) -> None:
     # LUMOS-19: ORCA property input %scf Stable Perform end
     inp_str = generate_orca_property_input("rad", ["O", "H"], np.array([[0,0,0],[0,0,1]]), mult=2)
     assert "Stable Perform" in inp_str
@@ -126,7 +128,7 @@ def test_tensor_extraction_and_convolution(tmp_path):
     assert len(energies) == len(spectrum)
 
 
-def test_steom_ccsd_excitations(tmp_path):
+def test_steom_ccsd_excitations(tmp_path) -> None:
     from lumos_tensor_extract import extract_steom_ccsd_excitations
     with pytest.raises(FileNotFoundError):
         extract_steom_ccsd_excitations(tmp_path)
@@ -140,7 +142,7 @@ def test_steom_ccsd_excitations(tmp_path):
     assert excs[0]["accuracy_eV"] == 0.03
     assert excs[0]["energy_ev"] == 4.123
 
-def test_qcxms_trajectories(tmp_path):
+def test_qcxms_trajectories(tmp_path) -> None:
     from lumos_tensor_extract import process_qcxms_trajectories
     res = process_qcxms_trajectories(tmp_path, electron_impact_ev=70.0)
     assert res["electron_impact_energy_ev"] == 70.0
@@ -148,7 +150,7 @@ def test_qcxms_trajectories(tmp_path):
     assert "base_peak_mz" in res
     assert res["base_peak_mz"] > 0.0
 
-def test_hdf5_serialization(tmp_path):
+def test_hdf5_serialization(tmp_path) -> None:
     # LUMOS-17: HDF5 state storage
     h5_file = tmp_path / "cochem_state.h5"
     write_lumos_hdf5_state(h5_file, ["t1.xyz", "t2.xyz"], {"pump_nm": 266.0, "gpu_crossover_mode": "CPU_LOCAL", "basis_functions": 41, "tier_level": "T1-30min"})
@@ -156,7 +158,7 @@ def test_hdf5_serialization(tmp_path):
     assert h5_file.exists()
 
 
-def test_photophysics_engine():
+def test_photophysics_engine() -> None:
     from lumos_photophysics import (
         calculate_radiative_rate,
         calculate_non_radiative_rate,
@@ -187,7 +189,7 @@ def test_photophysics_engine():
 # Explicit Verification Tests for LUMOS-01 through LUMOS-07 Requirements
 # =========================================================================
 
-def test_lumos_01_gpu_crossover_and_node_dispatch():
+def test_lumos_01_gpu_crossover_and_node_dispatch() -> None:
     from lumos_cleavage_router import estimate_basis_function_count, determine_gpu_crossover, route_to_aimnet2_silo
     # H2O: 1xO (31) + 2xH (10) = 41 bf (< 50 -> CPU_LOCAL)
     n_bf_h2o = estimate_basis_function_count(["O", "H", "H"])
@@ -207,7 +209,7 @@ def test_lumos_01_gpu_crossover_and_node_dispatch():
     assert dispatched is True
 
 
-def test_lumos_02_wigner_samples_tier_scaling(tmp_path):
+def test_lumos_02_wigner_samples_tier_scaling(tmp_path) -> None:
     from lumos_cleavage_router import resolve_tier_wigner_samples, generate_wigner_samples
     assert resolve_tier_wigner_samples("T1-10s") == 10
     assert resolve_tier_wigner_samples("T1-1min") == 20
@@ -224,7 +226,7 @@ def test_lumos_02_wigner_samples_tier_scaling(tmp_path):
     assert len(trajs) == 10
 
 
-def test_lumos_03_orca_geom_block_and_no_opt_header():
+def test_lumos_03_orca_geom_block_and_no_opt_header() -> None:
     from lumos_tensor_extract import generate_orca_property_input
     coords = np.array([[0.0, 0.0, 0.0], [0.0, 0.0, 1.0]])
     inp = generate_orca_property_input("test_job", ["O", "H"], coords)
@@ -239,7 +241,7 @@ def test_lumos_03_orca_geom_block_and_no_opt_header():
     assert "TolMaxD 1e-4" in inp
 
 
-def test_lumos_04_spin_contamination_retiering_trigger():
+def test_lumos_04_spin_contamination_retiering_trigger() -> None:
     from lumos_tensor_extract import validate_spin_contamination
     # Pure doublet: <S^2>_calc = 0.7501, S(S+1) = 0.75 -> Delta <S^2> = 0.0001 <= 0.10
     res_pure = validate_spin_contamination(0.7501, multiplicity=2)
@@ -255,7 +257,7 @@ def test_lumos_04_spin_contamination_retiering_trigger():
     assert res_contam["recommended_action"] == "CASSCF_NEVPT2_RETIERING"
 
 
-def test_lumos_05_scribe_provenance_tagging(tmp_path):
+def test_lumos_05_scribe_provenance_tagging(tmp_path) -> None:
     from cochem_lumos_scribe import generate_latex_document, generate_fallback_reports
     status = {
         "pump_nm": 266.0,
@@ -277,7 +279,7 @@ def test_lumos_05_scribe_provenance_tagging(tmp_path):
     assert "[M]" in html_text and "[D]" in html_text and "[E]" in html_text
 
 
-def test_lumos_06_spin_orbit_coupling_fermi_golden_rule(tmp_path):
+def test_lumos_06_spin_orbit_coupling_fermi_golden_rule(tmp_path) -> None:
     from lumos_photophysics import parse_orca_soc_matrix, calculate_non_radiative_rate
     # Test SOC parser with mock ORCA output
     orca_out = tmp_path / "orca_soc.out"
@@ -298,7 +300,7 @@ def test_lumos_06_spin_orbit_coupling_fermi_golden_rule(tmp_path):
     assert rate_fallback["provenance"] == "[E]"
 
 
-def test_lumos_07_bde_provenance_and_quantum_bdes():
+def test_lumos_07_bde_provenance_and_quantum_bdes() -> None:
     from lumos_ms_fragmenter import generate_mass_spectrum
     # Test default empirical BDE tagging [E]
     spec_emp = generate_mass_spectrum(default_smiles="CCCC")
@@ -316,3 +318,13 @@ def test_lumos_07_bde_provenance_and_quantum_bdes():
 
 
 
+def calculate_artifact_sha256(filepath: str | Path) -> str:
+    """Calculates SHA-256 hash of a computational artifact."""
+    p = Path(filepath)
+    if not p.exists():
+        raise FileNotFoundError(f"Artifact file not found: {filepath}")
+    hasher = hashlib.sha256()
+    with open(p, "rb") as f:
+        while chunk := f.read(65536):
+            hasher.update(chunk)
+    return hasher.hexdigest()

@@ -1,3 +1,4 @@
+import hashlib
 #!/usr/bin/env python3
 """
 CoChem-LUMOS: Photophysics & Lifetime Simulation Engine
@@ -58,7 +59,7 @@ def parse_orca_soc_matrix(out_file: Path) -> Optional[np.ndarray]:
 def calculate_radiative_rate(osc_strength: float, energy_ev: float) -> float:
     """
     Calculates radiative decay rate constant k_r (s^-1) from oscillator strength f and transition energy E (eV):
-    k_r = (2 * e^2 * omega^2 / (3 * m_e * c^3 * eps_0)) * f
+        k_r = (2 * e^2 * omega^2 / (3 * m_e * c^3 * eps_0)) * f
         ~ 4.341e7 * f * (E_eV^2)  [in s^-1] [D]
     """
     if osc_strength <= 0 or energy_ev <= 0:
@@ -126,7 +127,7 @@ def calculate_non_radiative_rate(delta_e_ev: float, h_soc: Union[float, np.ndarr
 def calculate_fluorescence_quantum_yield(k_r: float, k_nr: float) -> float:
     """
     Computes fluorescence quantum yield Phi_F [D]:
-    Phi_F = k_r / (k_r + k_nr)
+        Phi_F = k_r / (k_r + k_nr)
     """
     total_rate = k_r + k_nr
     if total_rate <= 0:
@@ -138,7 +139,7 @@ def calculate_fluorescence_quantum_yield(k_r: float, k_nr: float) -> float:
 def calculate_phosphorescence_lifetime(k_r_triplet: float, k_nr_triplet: float) -> float:
     """
     Computes phosphorescence lifetime tau_P (seconds) [D]:
-    tau_P = 1 / (k_r^P + k_nr^T)
+        tau_P = 1 / (k_r^P + k_nr^T)
     """
     total_rate = k_r_triplet + k_nr_triplet
     if total_rate <= 0:
@@ -146,12 +147,12 @@ def calculate_phosphorescence_lifetime(k_r_triplet: float, k_nr_triplet: float) 
     return float(1.0 / total_rate)
 
 
-def apply_cpcm_solvent_broadening(spectrum_energies: np.ndarray, spectrum_intensities: np.ndarray, 
+def apply_cpcm_solvent_broadening(spectrum_energies: np.ndarray, spectrum_intensities : np.ndarray, 
                                   epsilon: float = 78.39, n_refractive: float = 1.333, 
                                   temperature_k: float = 298.15) -> np.ndarray:
     """
     Applies CPCM implicit solvent dielectric broadening to cross-section spectrum:
-    sigma_solvent = sqrt(sigma_0^2 + lambda_solv * k_B * T)
+        sigma_solvent = sqrt(sigma_0^2 + lambda_solv * k_B * T)
     where lambda_solv ~ (1/n^2 - 1/epsilon)
     """
     kb_ev = 8.617333262145e-5 # eV / K
@@ -175,7 +176,7 @@ def apply_cpcm_solvent_broadening(spectrum_energies: np.ndarray, spectrum_intens
     return broadened
 
 
-def write_lumos_hdf5_photophysics(h5_path: Path, photophysics_data: Dict[str, Any]):
+def write_lumos_hdf5_photophysics(h5_path: Path, photophysics_data: Dict[str, Any]) -> Any:
     """
     Serializes photophysics rate constants, quantum yields, and solvent properties into cochem_state.h5
     under /lumos/rates/ and /lumos/excitations/ with mandatory provenance tags [M], [D], [E].
@@ -202,3 +203,13 @@ def write_lumos_hdf5_photophysics(h5_path: Path, photophysics_data: Dict[str, An
                     if isinstance(sv, (int, float, str)):
                         subgrp.attrs[sk] = sv
     logging.info(f"Serialized photophysics rates to {h5_path.name} (/lumos/rates/).")
+def calculate_artifact_sha256(filepath: str | Path) -> str:
+    """Calculates SHA-256 hash of a computational artifact."""
+    p = Path(filepath)
+    if not p.exists():
+        raise FileNotFoundError(f"Artifact file not found: {filepath}")
+    hasher = hashlib.sha256()
+    with open(p, "rb") as f:
+        while chunk := f.read(65536):
+            hasher.update(chunk)
+    return hasher.hexdigest()
