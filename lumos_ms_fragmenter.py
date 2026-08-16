@@ -51,7 +51,7 @@ def generate_mass_spectrum(mol_input: Any = None, electron_impact_ev: float = 70
                 try:
                     mol = Chem.MolFromMolBlock(mol_input)
                 except Exception:
-                    pass
+                    raise NotImplementedError("Implementation pending")
         elif hasattr(mol_input, "GetNumAtoms"):
             mol = mol_input
             try:

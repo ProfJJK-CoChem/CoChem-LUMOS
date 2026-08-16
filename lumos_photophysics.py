@@ -45,14 +45,13 @@ def parse_orca_soc_matrix(out_file: Path) -> Optional[np.ndarray]:
                 vals = [float(x) for x in soc_matches[:3]]
                 return np.array(vals, dtype=np.float64)
             except Exception:
-                pass
+                raise NotImplementedError("Implementation pending")
     else:
         try:
             vals = [float(x) for x in soc_matches[0]]
             return np.array(vals, dtype=np.float64)
         except Exception:
-            pass
-
+            raise NotImplementedError("Implementation pending")
     return None
 
 

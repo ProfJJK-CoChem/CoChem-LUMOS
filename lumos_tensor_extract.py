@@ -86,16 +86,16 @@ def parse_orca_prop_file(prop_file: Path) -> dict:
     """
     Parses actual ORCA .prop files to extract g-matrix, D-tensor, spin-rotation, and hyperfine couplings.
     """
-    g_tensor = np.eye(3, dtype=np.float64) * 2.002319
-    d_tensor = np.zeros((3, 3), dtype=np.float64)
+    g_tensor = None
+    d_tensor = None
     spin_rot = np.zeros((3, 3), dtype=np.float64)
     a_iso = []
     
     try:
         with open(prop_file, "r", encoding="utf-8", errors="ignore") as f:
             content = f.read()
-    except Exception:
-        content = ""
+    except Exception as e:
+        raise FileNotFoundError(f"Cannot read prop file: {e}")
 
     # Parse g-tensor shift
     g_match = re.search(r"The g-matrix:\s*([-\d\.\s]+)", content)
@@ -106,6 +106,24 @@ def parse_orca_prop_file(prop_file: Path) -> dict:
                 g_tensor = np.array(vals, dtype=np.float64).reshape(3, 3)
         except Exception as ex:
             logging.debug(f"Failed to parse g-matrix block: {ex}")
+            
+    if g_tensor is None:
+        raise NotImplementedError("g-tensor could not be extracted from the property file.")
+        
+    d_match = re.search(r"Raw D-tensor.*?:[\s\S]*?([-\d\.\s]+)", content)
+    if d_match:
+        vals = []
+        for x in d_match.group(1).split():
+            try:
+                vals.append(float(x))
+            except ValueError:
+                pass
+            if len(vals) == 9: break
+        if len(vals) == 9:
+            d_tensor = np.array(vals, dtype=np.float64).reshape(3, 3)
+            
+    if d_tensor is None:
+        raise NotImplementedError("D-tensor could not be extracted from the property file.")
 
     # Parse Hyperfine couplings A_iso
     a_matches = re.findall(r"Isotropic Fermi contact coupling\s*:\s*([-\d\.]+)", content)
@@ -113,7 +131,7 @@ def parse_orca_prop_file(prop_file: Path) -> dict:
         a_iso = [float(x) for x in a_matches]
 
     if not a_iso:
-        a_iso = [14.2, -5.1, -5.1]
+        a_iso = []
 
     return {
         "g_tensor": g_tensor.tolist(),
@@ -134,12 +152,7 @@ def extract_radical_tensors(target_dir: Path) -> dict:
     if prop_files:
         tensors = parse_orca_prop_file(prop_files[0])
     else:
-        tensors = {
-            "g_tensor": [[2.0023, 0.0, 0.0], [0.0, 2.0023, 0.0], [0.0, 0.0, 2.0023]],
-            "d_tensor": [[0.0, 0.0, 0.0], [0.0, 0.0, 0.0], [0.0, 0.0, 0.0]],
-            "spin_rotation_mhz": [[120.5, 0.0, 0.0], [0.0, 118.2, 0.0], [0.0, 0.0, 10.4]],
-            "a_iso_mhz": [14.2, -5.1, -5.1]
-        }
+        raise FileNotFoundError(f"No ORCA .prop files found in {target_dir}")
 
     out_files = list(target_dir.glob("*.out"))
     if out_files:
@@ -154,8 +167,7 @@ def extract_radical_tensors(target_dir: Path) -> dict:
                             except ValueError as ex:
                                 logging.debug(f"Failed to parse S^2 value: {ex}")
             except Exception:
-                pass
-
+                raise NotImplementedError("Implementation pending")
     tensors["s_squared"] = s_squared
     return tensors
 
@@ -227,8 +239,7 @@ def process_qcxms_trajectories(trajectory_dir: Path, electron_impact_ev: float =
                     mol_input = content
                     break
             except Exception:
-                pass
-
+                raise NotImplementedError("Implementation pending")
     return generate_mass_spectrum(mol_input, electron_impact_ev=electron_impact_ev)
 
 

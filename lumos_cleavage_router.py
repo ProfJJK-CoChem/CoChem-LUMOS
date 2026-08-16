@@ -1,6 +1,3 @@
-import atexit
-import psutil
-import hashlib
 #!/usr/bin/env python3
 """
 CoChem-LUMOS: Stage 1.x Gatekeeper, Quantum Wigner Sampler & FSSH Router
@@ -18,12 +15,14 @@ import re
 import json
 import argparse
 import logging
-logger = logging.getLogger(__name__)
 import subprocess
+import atexit
+import psutil
+import hashlib
 from pathlib import Path
 from typing import Any, List, Dict, Tuple, Optional, Callable
 import numpy as np
-from cochem_base.config_loader import resolve_config_path
+from pydantic import BaseModel, Field
 
 try:
     import h5py
@@ -32,7 +31,6 @@ except ImportError:
     h5py = None
     H5PY_AVAILABLE = False
 
-
 class Colors:
     HEADER = '\033[95m'
     OKGREEN = '\033[92m'
@@ -40,28 +38,71 @@ class Colors:
     FAIL = '\033[91m'
     ENDC = '\033[0m'
 
-logging.basicConfig(filename='cochem_lumos_router.log', level=logging.INFO)
+# Pydantic Models
+class LumosConfig(BaseModel):
+    pump_nm: float = Field(default=266.0)
+    temp_k: float = Field(default=298.15)
+    tier: str = Field(default="T1-30min")
+    samples: Optional[int] = Field(default=None)
+    solvent: str = Field(default="water")
+    input_xyz: Path
 
+class LumosStatus(BaseModel):
+    status: str
+    pump_nm: float
+    target_temp_k: float
+    solvent: str
+    tier_level: str
+    gpu_crossover_mode: str
+    basis_functions: int
+    trajectories_tracked: int
+    output_dir: str
 
-def load_system_config() -> dict:
-    config_path = resolve_config_path()
-    if not config_path.exists():
-        return {}
-    with open(config_path, "r", encoding="utf-8") as f:
-        return json.loads(f.read())
+def get_artifact_dir() -> Path:
+    return Path(os.environ.get("COCHEM_ARTIFACT_DIR", Path.home() / "cochem_artifacts")).resolve()
 
+# Setup logging
+log_path = get_artifact_dir() / "cochem_lumos_router.log"
+log_path.parent.mkdir(parents=True, exist_ok=True)
+logging.basicConfig(
+    filename=str(log_path),
+    level=logging.INFO,
+    format='%(asctime)s [%(levelname)s] %(message)s'
+)
+logger = logging.getLogger(__name__)
+
+def cleanup_zombies():
+    try:
+        current_process = psutil.Process()
+        children = current_process.children(recursive=True)
+        for child in children:
+            try:
+                child.terminate()
+            except psutil.NoSuchProcess:
+                pass
+        _, alive = psutil.wait_procs(children, timeout=3)
+        for p in alive:
+            try:
+                p.kill()
+            except psutil.NoSuchProcess:
+                pass
+    except Exception as e:
+        logger.warning(f"Zombie cleanup failed: {e}")
+
+atexit.register(cleanup_zombies)
+
+def calculate_artifact_sha256(filepath: str | Path) -> str:
+    """Calculates SHA-256 hash of a computational artifact."""
+    p = Path(filepath)
+    if not p.exists():
+        raise FileNotFoundError(f"Artifact file not found: {filepath}")
+    hasher = hashlib.sha256()
+    with open(p, "rb") as f:
+        while chunk := f.read(65536):
+            hasher.update(chunk)
+    return hasher.hexdigest()
 
 def estimate_basis_function_count(symbols: List[str], basis_set: str = "def2-TZVP") -> int:
-    """
-    Computes basis function count N_bf for input geometry given basis set.
-    def2-TZVP basis function counts per atom:
-        H, He: 5
-    Li-Ne (C, N, O, F, etc.): 31
-    Na-Ar (P, S, Cl, etc.): 41
-    K-Kr (Br, etc.): 51
-    Rb-Xe (I, etc.): 61
-    Default: 31
-    """
     bf_map = {
         "H": 5, "HE": 5,
         "LI": 31, "BE": 31, "B": 31, "C": 31, "N": 31, "O": 31, "F": 31, "NE": 31,
@@ -75,40 +116,18 @@ def estimate_basis_function_count(symbols: List[str], basis_set: str = "def2-TZV
         total_bf += bf_map.get(clean_sym, 31)
     return total_bf
 
-
 TIER_WIGNER_MAP = {
-    "T1-10s": 10,
-    "T1-1min": 20,
-    "T1-30min": 50,
-    "T1-1h": 50,
-    "T2-1h": 100,
-    "T2-3h": 200,
-    "T2-12h": 500,
-    "T3-12h": 500,
-    "T3-1d": 500,
-    "T3-3d": 500,
-    "T4-1d": 500,
-    "T4-1w": 500,
-    "T4-1mo": 500
+    "T1-10s": 10, "T1-1min": 20, "T1-30min": 50, "T1-1h": 50,
+    "T2-1h": 100, "T2-3h": 200, "T2-12h": 500, "T3-12h": 500,
+    "T3-1d": 500, "T3-3d": 500, "T4-1d": 500, "T4-1w": 500, "T4-1mo": 500
 }
 
-
 def resolve_tier_wigner_samples(tier: str = "T1-30min", user_samples: Optional[int] = None) -> int:
-    """
-    Links Wigner trajectory count N_traj to v4 wall-clock tier budgets.
-    T1-10s -> 10, T1-1min -> 20, T1-30min -> 50, T2-3h -> 200, T3-12h/T4-1d -> 500.
-    """
     if user_samples is not None:
         return user_samples
     return TIER_WIGNER_MAP.get(tier, 50)
 
-
 def determine_gpu_crossover(symbols: List[str], basis_set: str = "def2-TZVP") -> Tuple[str, int]:
-    """
-    GPU crossover gating rule:
-        N_bf < 50  -> CPU_LOCAL (8 P-cores, KMP_HW_SUBSET=8c:intel_core,1t)
-    N_bf >= 50 -> GPU_MPS_MULTIPLEX (CUDA MPS multiplexing)
-    """
     n_bf = estimate_basis_function_count(symbols, basis_set)
     if n_bf < 50:
         mode = "CPU_LOCAL"
@@ -118,74 +137,59 @@ def determine_gpu_crossover(symbols: List[str], basis_set: str = "def2-TZVP") ->
         os.environ["CUDA_MPS_PIPE_DIRECTORY"] = "/tmp/nvidia-mps"
     return mode, n_bf
 
-
-def generate_wigner_samples(base_geometry: Path, num_samples: Optional[int] = None, temperature: float = 298.15, freqs: Optional[np.ndarray] = None, tier: str = "T1-30min") -> List[str]:
-    """
-    Generates quantum Wigner phase-space samples using normal mode frequencies
-    and Gaussian quantum harmonic oscillator displacement/momentum distributions.
-    """
-    resolved_samples = resolve_tier_wigner_samples(tier, num_samples)
-    logger.info(f"🎲 Generating {resolved_samples} quantum Wigner phase-space trajectories for tier {tier} at {temperature} K...")
-    sample_paths = []
-    
-    workspace_dir = Path(os.environ.get("COCHEM_ARTIFACT_DIR", ".")).resolve()
-    wigner_dir = workspace_dir / "LUMOS_Workspace" / "Wigner_Trajectories"
-    wigner_dir.mkdir(parents=True, exist_ok=True)
+def parse_geometry(file_path: Path) -> Tuple[List[str], np.ndarray]:
+    if not file_path.exists():
+        raise FileNotFoundError(f"[MISSING DATA] Geometry file not found: {file_path}")
     
     symbols = []
     coords_list = []
-    if base_geometry is not None and Path(base_geometry).exists():
-        try:
-            with open(base_geometry, "r", encoding="utf-8", errors="ignore") as f:
-                lines = [line.strip() for line in f if line.strip()]
-            if len(lines) >= 3:
-                for line in lines[2:]:
-                    parts = line.split()
-                    if len(parts) >= 4:
-                        symbols.append(parts[0])
-                        coords_list.append([float(parts[1]), float(parts[2]), float(parts[3])])
-        except Exception as ex:
-            logging.debug(f"Failed to parse base geometry file {base_geometry}: {ex}")
+    with open(file_path, "r", encoding="utf-8") as f:
+        lines = [line.strip() for line in f if line.strip()]
+        if len(lines) < 3:
+            raise ValueError(f"[MISSING DATA] Invalid XYZ format in {file_path}")
+        for line in lines[2:]:
+            parts = line.split()
+            if len(parts) >= 4:
+                symbols.append(parts[0])
+                coords_list.append([float(parts[1]), float(parts[2]), float(parts[3])])
+                
+    if not symbols:
+        raise ValueError(f"[MISSING DATA] No valid coordinates found in {file_path}")
+        
+    return symbols, np.array(coords_list, dtype=float)
 
-    if len(symbols) > 0 and len(coords_list) == len(symbols):
-        base_coords = np.array(coords_list, dtype=float)
-    else:
-        # Baseline H2O geometry
-        base_coords = np.array([
-            [0.000000, 0.000000, 0.117790],
-            [0.000000, 0.755450, -0.471161],
-            [0.000000, -0.755450, -0.471161]
-        ])
-        symbols = ["O", "H", "H"]
+def generate_wigner_samples(base_geometry: Path, num_samples: Optional[int] = None, temperature: float = 298.15, freqs: Optional[np.ndarray] = None, tier: str = "T1-30min") -> List[str]:
+    resolved_samples = resolve_tier_wigner_samples(tier, num_samples)
+    logger.info(f"Generating {resolved_samples} Wigner phase-space trajectories for tier {tier} at {temperature} K...")
+    
+    symbols, base_coords = parse_geometry(base_geometry)
     
     if freqs is None:
-        if len(symbols) == 3:
-            freqs = np.array([1595.0, 3657.0, 3756.0]) # cm^-1 for H2O
-        else:
-            num_freqs = max(1, 3 * len(symbols) - 6)
-            freqs = np.linspace(500.0, 3500.0, num_freqs)
-
-    h_bar = 1.054571817e-34 # J s
-    kB = 1.380649e-23     # J/K
-    c = 29979245800.0     # cm/s
-
-    # Compute Wigner widths per normal mode
+        raise ValueError("[MISSING DATA] Frequencies must be explicitly provided for Wigner sampling. Hallucinated frequencies are prohibited.")
+        
+    wigner_dir = get_artifact_dir() / "LUMOS_Workspace" / "Wigner_Trajectories"
+    wigner_dir.mkdir(parents=True, exist_ok=True)
+    
+    h_bar = 1.054571817e-34
+    kB = 1.380649e-23
+    c = 29979245800.0
+    
     sigma_q_list = []
     sigma_p_list = []
     for f in freqs:
         omega = 2.0 * np.pi * c * f
         coth_val = 1.0 / np.tanh(h_bar * omega / (2.0 * kB * temperature))
-        sigma_q = np.sqrt((h_bar / (2.0 * 1.660539e-27 * omega)) * coth_val) * 1e10 # Angstroms
+        sigma_q = np.sqrt((h_bar / (2.0 * 1.660539e-27 * omega)) * coth_val) * 1e10
         sigma_p = np.sqrt((h_bar * 1.660539e-27 * omega / 2.0) * coth_val)
         sigma_q_list.append(sigma_q)
         sigma_p_list.append(sigma_p)
 
     primes = [2, 3, 5, 7, 11, 13, 17, 19, 23, 29]
     n_atoms = len(symbols)
+    sample_paths = []
 
     for i in range(resolved_samples):
         out_file = wigner_dir / f"traj_seed_{i+1:03d}.xyz"
-        # Perturb coordinates using quantum Wigner distribution and deterministic Halton Box-Muller sampling
         q_disp = np.zeros(base_coords.shape)
         p_mom = np.zeros(base_coords.shape)
         
@@ -230,189 +234,141 @@ def generate_wigner_samples(base_geometry: Path, num_samples: Optional[int] = No
         
     return sample_paths
 
-
 def route_to_aimnet2_silo(trajectories: List[str], solvent: str = "water", symbols: Optional[List[str]] = None, basis_set: str = "def2-TZVP") -> bool:
-    """
-    Dispatches trajectory payload via NODE dispatch reading cochem_system_config.json
-    with GPU crossover gating (N_bf < 50 -> CPU_LOCAL; N_bf >= 50 -> GPU_MPS_MULTIPLEX).
-    """
-    if symbols is None:
-        symbols = ["O", "H", "H"]  # Default H2O baseline
-
+    if not symbols:
+        raise ValueError("[MISSING DATA] Symbols must be provided to determine crossover.")
+        
     crossover_mode, n_bf = determine_gpu_crossover(symbols, basis_set)
-    config = load_system_config()
-    hardware_cfg = config.get("hardware", {})
-    mps_cfg = hardware_cfg.get("mps", {})
-    core_pinning = hardware_cfg.get("core_pinning", {})
-
-    logger.info(f"[NODE] Dispatching {len(trajectories)} trajectories to AIMNet2 Micro-Silo (Solvent: {solvent})...")
-    logger.info(f"  [NODE Router] Basis Functions N_bf={n_bf} -> Crossover Mode: {crossover_mode}")
+    logger.info(f"[NODE] Dispatching {len(trajectories)} trajectories (Solvent: {solvent}, Mode: {crossover_mode}, N_bf: {n_bf})")
 
     env = os.environ.copy()
     if crossover_mode == "CPU_LOCAL":
-        env["KMP_HW_SUBSET"] = core_pinning.get("kmp_hw_subset", "8c:intel_core,1t")
+        env["KMP_HW_SUBSET"] = "8c:intel_core,1t"
     else:
-        env["CUDA_MPS_PIPE_DIRECTORY"] = mps_cfg.get("pipe_dir", "/tmp/nvidia-mps")
-        env["CUDA_MPS_LOG_DIRECTORY"] = mps_cfg.get("log_dir", "/tmp/nvidia-log")
+        env["CUDA_MPS_PIPE_DIRECTORY"] = "/tmp/nvidia-mps"
+        env["CUDA_MPS_LOG_DIRECTORY"] = "/tmp/nvidia-log"
 
     cmd = [
         sys.executable, "-c",
-        f"import sys, os; "
-        f"print('[NODE Worker PID {{os.getpid()}}] Executing {len(trajectories)} trajectories in {solvent} solvent (Mode: {crossover_mode}, N_bf: {n_bf})'); "
-        f"sys.exit(0)"
+        f"import logging; logging.basicConfig(level=logging.INFO); "
+        f"logging.info('[NODE Worker] Executing {len(trajectories)} trajectories in {solvent} solvent.')"
     ]
     try:
-        proc = subprocess.Popen(cmd, stdout=subprocess.PIPE, stderr=subprocess.PIPE, env=env)
-        stdout, stderr = proc.communicate(timeout=5)
-        logging.info(f"NODE AIMNet2 Silo dispatched {len(trajectories)} jobs (Mode: {crossover_mode}, N_bf: {n_bf}, PID: {proc.pid}). Output: {stdout.decode().strip()}")
-        logger.info(f"{Colors.OKGREEN}[OK] AIMNet2 NODE background dispatch complete (Mode: {crossover_mode}, N_bf: {n_bf}, PID {proc.pid}).{Colors.ENDC}")
+        proc = subprocess.run(cmd, capture_output=True, text=True, timeout=15, check=True, env=env)
+        logger.info(f"NODE AIMNet2 Silo dispatched successfully. Output: {proc.stdout.strip()}")
         return True
-    except Exception as e:
-        logging.error(f"Failed to execute AIMNet2 NODE dispatch: {e}")
+    except subprocess.TimeoutExpired as e:
+        logger.error(f"NODE AIMNet2 Silo dispatch timed out: {e}")
+        return False
+    except subprocess.CalledProcessError as e:
+        logger.error(f"NODE AIMNet2 Silo dispatch failed: {e.stderr}")
         return False
 
-
 def evaluate_fssh_switch_probability(state_curr: int, state_target: int, c_coeff: np.ndarray, d_ij: np.ndarray, velocity: np.ndarray, dt: float) -> float:
-    """
-    Evaluates Tully's Fewest Switches Surface Hopping (FSSH) transition probability P_{i -> j}.
-    """
     if state_curr == state_target:
         return 0.0
-
     c_i = c_coeff[state_curr]
     c_j = c_coeff[state_target]
     v_dot_d = np.sum(velocity * d_ij)
-    
     numerator = -2.0 * np.real(c_i * np.conj(c_j) * v_dot_d) * dt
     denominator = float(np.abs(c_i)**2)
-    
     if denominator < 1e-12:
         return 0.0
-        
-    p_ij = numerator / denominator
-    return float(np.clip(p_ij, 0.0, 1.0))
-
+    return float(np.clip(numerator / denominator, 0.0, 1.0))
 
 def optimize_mecp_geometry(coords: np.ndarray, grad_s0_fn: Callable, grad_s1_fn: Callable, energy_s0_fn: Callable, energy_s1_fn: Callable, max_iter: int = 30) -> Tuple[np.ndarray, float]:
-    """
-    Implements Harvey's Minimum Energy Crossing Point (MECP) optimization algorithm
-    between electronic states S0 and S1.
-    """
     cur_coords = coords.copy()
     step_size = 0.02
     min_gap = np.inf
-    
     for i in range(max_iter):
         e0 = energy_s0_fn(cur_coords)
         e1 = energy_s1_fn(cur_coords)
         gap = abs(e1 - e0)
         min_gap = min(min_gap, gap)
-        
         if gap < 0.01:
-            logging.info(f"MECP optimization converged at iteration {i} with gap {gap:.4f} eV.")
             break
-            
         g0 = grad_s0_fn(cur_coords)
         g1 = grad_s1_fn(cur_coords)
-        
-        # Harvey effective MECP gradient: g_MECP = (E1 - E0)*x_u + g_parallel
         delta_e = e1 - e0
         g_diff = g1 - g0
         norm_diff = max(np.linalg.norm(g_diff), 1e-8)
         x_u = g_diff / norm_diff
-        
         g_mean = 0.5 * (g0 + g1)
         g_mean_perp = g_mean - np.sum(g_mean * x_u) * x_u
-        
         g_mecp = delta_e * x_u + g_mean_perp
         cur_coords -= step_size * g_mecp
-        
     return cur_coords, float(min_gap)
 
-
-def write_lumos_hdf5_state(h5_path: Path, trajectories: List[str], status_data: Dict) -> Any:
-    """
-    Serializes LUMOS trajectory registry into cochem_state.h5 at /lumos/trajectories/.
-    """
+def write_lumos_hdf5_state(h5_path: Path, trajectories: List[str], status_data: LumosStatus) -> None:
     h5_path.parent.mkdir(parents=True, exist_ok=True)
     if not H5PY_AVAILABLE:
-        logging.warning("h5py not available. Serialization handled via status JSON.")
+        logger.warning("h5py not available. Serialization handled via status JSON.")
         return
-
     with h5py.File(h5_path, "a") as f:
         grp = f.require_group("lumos/trajectories")
-        grp.attrs["pump_nm"] = status_data.get("pump_nm", 266.0)
-        grp.attrs["solvent"] = status_data.get("solvent", "water")
+        grp.attrs["pump_nm"] = status_data.pump_nm
+        grp.attrs["solvent"] = status_data.solvent
         grp.attrs["trajectories_count"] = len(trajectories)
-        grp.attrs["gpu_crossover_mode"] = status_data.get("gpu_crossover_mode", "CPU_LOCAL")
-        grp.attrs["basis_functions"] = status_data.get("basis_functions", 41)
-        grp.attrs["tier_level"] = status_data.get("tier_level", "T1-30min")
+        grp.attrs["gpu_crossover_mode"] = status_data.gpu_crossover_mode
+        grp.attrs["basis_functions"] = status_data.basis_functions
+        grp.attrs["tier_level"] = status_data.tier_level
+    logger.info(f"Serialized LUMOS state to {h5_path.name} (/lumos/trajectories/).")
 
-    logging.info(f"Serialized LUMOS state to {h5_path.name} (/lumos/trajectories/).")
-
-
-def main() -> Any:
+def main():
     parser = argparse.ArgumentParser(description="CoChem-LUMOS Photochemical Cleavage Router")
-    parser.add_argument("--pump-nm", type=float, default=266.0, help="Pump laser wavelength in nm")
-    parser.add_argument("--temp-k", type=float, default=298.15, help="Thermal bath temperature in K")
-    parser.add_argument("--tier", type=str, default="T1-30min", choices=["T1-10s", "T1-1min", "T1-30min", "T2-1h", "T2-3h", "T2-12h", "T3-1d", "T3-3d", "T4-1w", "T4-1mo"], help="v4 Wall-clock tier budget")
-    parser.add_argument("--samples", type=int, default=None, help="Number of Wigner phase-space samples (overrides tier default)")
-    parser.add_argument("--solvent", type=str, default="water", help="Solvent CPCM configuration")
-    parser.add_argument("--input-xyz", type=str, default="optimized_ground_state.xyz", help="Base geometry XYZ path")
+    parser.add_argument("--pump-nm", type=float, default=266.0)
+    parser.add_argument("--temp-k", type=float, default=298.15)
+    parser.add_argument("--tier", type=str, default="T1-30min", choices=["T1-10s", "T1-1min", "T1-30min", "T2-1h", "T2-3h", "T2-12h", "T3-1d", "T3-3d", "T4-1w", "T4-1mo"])
+    parser.add_argument("--samples", type=int, default=None)
+    parser.add_argument("--solvent", type=str, default="water")
+    parser.add_argument("--input-xyz", type=str, required=True)
     args = parser.parse_args()
 
-    logger.info(f"\n{Colors.HEADER}--- CoChem-LUMOS: Photochemical Cleavage Router ---{Colors.ENDC}")
-    logger.info(f"⚡ Pump Energy: {args.pump_nm} nm  |  Thermal Bath: {args.temp_k} K  |  Tier: {args.tier}  |  Solvent: {args.solvent}")
+    config = LumosConfig(
+        pump_nm=args.pump_nm,
+        temp_k=args.temp_k,
+        tier=args.tier,
+        samples=args.samples,
+        solvent=args.solvent,
+        input_xyz=Path(args.input_xyz)
+    )
+
+    logger.info("--- CoChem-LUMOS: Photochemical Cleavage Router ---")
     
-    sample_input = Path(args.input_xyz)
-    symbols = ["O", "H", "H"]
-    if sample_input.exists():
-        try:
-            with open(sample_input, "r", encoding="utf-8", errors="ignore") as f:
-                lines = [line.strip() for line in f if line.strip()]
-            if len(lines) >= 3:
-                parsed_syms = [line.split()[0] for line in lines[2:] if len(line.split()) >= 4]
-                if parsed_syms:
-                    symbols = parsed_syms
-        except Exception:
-            pass
+    symbols, _ = parse_geometry(config.input_xyz)
     crossover_mode, n_bf = determine_gpu_crossover(symbols)
+    num_samples = resolve_tier_wigner_samples(config.tier, config.samples)
     
-    num_samples = resolve_tier_wigner_samples(args.tier, args.samples)
-    trajectories = generate_wigner_samples(sample_input, num_samples=num_samples, temperature=args.temp_k, tier=args.tier)
+    # Needs external frequencies to prevent spoofing
+    freqs_path = config.input_xyz.with_suffix(".freq")
+    if not freqs_path.exists():
+        logger.error(f"[MISSING DATA] Frequency file not found: {freqs_path}")
+        sys.exit(1)
+        
+    freqs = np.loadtxt(freqs_path)
+    trajectories = generate_wigner_samples(config.input_xyz, num_samples=num_samples, temperature=config.temp_k, freqs=freqs, tier=config.tier)
     
-    if route_to_aimnet2_silo(trajectories, solvent=args.solvent, symbols=symbols):
-        workspace_dir = Path(os.environ.get("COCHEM_ARTIFACT_DIR", ".")).resolve()
-        status = {
-            "status": "DYNAMICS_IN_PROGRESS",
-            "pump_nm": args.pump_nm,
-            "target_temp_k": args.temp_k,
-            "solvent": args.solvent,
-            "tier_level": args.tier,
-            "gpu_crossover_mode": crossover_mode,
-            "basis_functions": n_bf,
-            "trajectories_tracked": len(trajectories),
-            "output_dir": str(workspace_dir / "LUMOS_Workspace" / "Dynamics_Out")
-        }
+    if route_to_aimnet2_silo(trajectories, solvent=config.solvent, symbols=symbols):
+        workspace_dir = get_artifact_dir()
+        
+        status = LumosStatus(
+            status="DYNAMICS_IN_PROGRESS",
+            pump_nm=config.pump_nm,
+            target_temp_k=config.temp_k,
+            solvent=config.solvent,
+            tier_level=config.tier,
+            gpu_crossover_mode=crossover_mode,
+            basis_functions=n_bf,
+            trajectories_tracked=len(trajectories),
+            output_dir=str(workspace_dir / "LUMOS_Workspace" / "Dynamics_Out")
+        )
         
         status_path = workspace_dir / "LUMOS_Refinement_Status.json"
         with open(status_path, "w") as f:
-            json.dump(status, f, indent=4)
+            f.write(status.model_dump_json(indent=4))
             
         write_lumos_hdf5_state(workspace_dir / "cochem_state.h5", trajectories, status)
-            
-        logger.info(f"{Colors.OKGREEN}✅ LUMOS Stage 1.x Complete. Refinement Status locked.{Colors.ENDC}\n")
-
+        logger.info("LUMOS Stage 1.x Complete. Refinement Status locked.")
 
 if __name__ == "__main__":
     main()
-def calculate_artifact_sha256(filepath: str | Path) -> str:
-    """Calculates SHA-256 hash of a computational artifact."""
-    p = Path(filepath)
-    if not p.exists():
-        raise FileNotFoundError(f"Artifact file not found: {filepath}")
-    hasher = hashlib.sha256()
-    with open(p, "rb") as f:
-        while chunk := f.read(65536):
-            hasher.update(chunk)
-    return hasher.hexdigest()
