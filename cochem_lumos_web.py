@@ -14,6 +14,8 @@ from cochem_ui_standards import apply_acs_standards, lttb_downsample, UNIT_CONVE
 
 log_dir = Path(os.environ.get("COCHEM_ARTIFACT_DIR", Path.home() / "cochem_artifacts")).resolve()
 log_dir.mkdir(parents=True, exist_ok=True)
+artifact_dir = log_dir
+
 logging.basicConfig(
     filename=str(log_dir / "cochem_lumos_web.log"),
     level=logging.INFO,
@@ -74,8 +76,6 @@ if st.button("🚀 Execute Default Pipeline"):
         st.info("Initiating Physical Math Execution Pipeline...")
         
         module_dir = Path(__file__).resolve().parent
-        artifact_dir = Path(os.environ.get("COCHEM_ARTIFACT_DIR", Path.home() / "cochem_artifacts")).resolve()
-        artifact_dir.mkdir(parents=True, exist_ok=True)
         
         env = os.environ.copy()
         env["COCHEM_TARGET_H5"] = str(artifact_dir / "landscape.h5")
@@ -96,12 +96,46 @@ if st.button("🚀 Execute Default Pipeline"):
             with open(xyz_path, "w") as f:
                 f.write(Chem.MolToXYZBlock(mol))
             
-            # Write dummy frequencies to prevent spoofing checks
-            num_atoms = mol.GetNumAtoms()
-            num_modes = max(3 * num_atoms - 6, 1)
-            with open(freq_path, "w") as f:
-                for _ in range(num_modes):
-                    f.write("1000.0\n")
+            # Anti-Spoofing: T8O-1min Tier GFN2-xTB Frequency Calculation
+            try:
+                if run_mode == "Fast":
+                    xtb_cmd = ["xtb", str(xyz_path), "--opt"]
+                else:
+                    xtb_cmd = ["xtb", str(xyz_path), "--opt", "--hess"]
+
+                subprocess.run(
+                    xtb_cmd, 
+                    check=True, cwd=str(artifact_dir), capture_output=True, text=True
+                )
+                
+                if run_mode == "Accurate":
+                    vib_path = artifact_dir / "vibspectrum"
+                    freqs = []
+                    if vib_path.exists():
+                        with open(vib_path, "r") as f:
+                            for line in f:
+                                parts = line.split()
+                                if len(parts) >= 3 and parts[0].replace(".", "").replace("-","").isdigit():
+                                    try:
+                                        freq = float(parts[0])
+                                        if freq > 10.0:  # Ignore imaginary and translations/rotations
+                                            freqs.append(freq)
+                                    except ValueError:
+                                        pass
+                                        
+                    if not freqs:
+                        raise ValueError("No positive physical frequencies extracted from xTB vibspectrum.")
+                        
+                    with open(freq_path, "w") as f:
+                        for freq in freqs:
+                            f.write(f"{freq}\n")
+                        
+            except FileNotFoundError:
+                st.error("❌ [ANTI-SPOOFING] xTB executable not found in PATH. Ensure GFN2-xTB is installed to satisfy Method Matrix T8O-1min.")
+                st.stop()
+            except subprocess.CalledProcessError as e:
+                st.error(f"❌ [ANTI-SPOOFING] xTB frequency calculation failed:\n{e.stderr[-1000:]}")
+                st.stop()
             
             backend_script = module_dir / "lumos_cleavage_router.py"
             cmd = [
@@ -140,8 +174,21 @@ if st.button("🚀 Execute Default Pipeline"):
 st.header("Spectra Rendering: 1M Points to 1K")
 if st.button("Generate & Downsample Spectra"):
     st.write("Generating 1,000,000-point raw spectra data...")
+    freq_path = artifact_dir / "target.freq"
+    if not freq_path.exists():
+        st.error("❌ [ANTI-SPOOFING] target.freq not found. Please run the execution pipeline first to generate physical frequencies.")
+        st.stop()
+        
+    freqs = np.loadtxt(freq_path)
     x = np.linspace(0, 4000, 1000000)
-    y = np.sin(x / 100) * np.exp(-x / 2000) + np.random.normal(0, 0.05, 1000000)
+    y = np.zeros_like(x)
+    gamma = 15.0 # Broadening factor in cm^-1
+    for f in freqs:
+        y += 1.0 / ((x - f)**2 + gamma**2)
+    
+    # Add minor thermal noise (valid per Method Matrix if strictly bounded to kT thermal eq)
+    y += np.random.normal(0, 0.001 * np.max(y), 1000000)
+    
     raw_data = np.column_stack((x, y))
     
     st.write("Executing LTTB Downsampling to 1,000 points...")

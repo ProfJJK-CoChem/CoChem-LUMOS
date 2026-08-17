@@ -1,9 +1,0 @@
-LICENSE
-README.md
-pyproject.toml
-cochem_lumos.egg-info/PKG-INFO
-cochem_lumos.egg-info/SOURCES.txt
-cochem_lumos.egg-info/dependency_links.txt
-cochem_lumos.egg-info/requires.txt
-cochem_lumos.egg-info/top_level.txt
-tests/test_lumos_pipeline.py

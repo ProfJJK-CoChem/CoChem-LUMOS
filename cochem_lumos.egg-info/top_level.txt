@@ -1,3 +1,0 @@
-LUMOS_Workspace
-notebooks
-tests

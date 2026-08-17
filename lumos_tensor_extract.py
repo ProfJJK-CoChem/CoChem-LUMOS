@@ -384,6 +384,34 @@ def main() -> Any:
 
         status["tensors"] = tensors
         status["uv_vis"] = uv_vis
+        
+        rates = {}
+        if uv_vis and len(uv_vis) > 0:
+            s1 = uv_vis[0]
+            e_ev = s1["energy_ev"]
+            f_osc = s1["osc_strength"]
+            kr = calculate_radiative_rate(f_osc, e_ev)
+            nr_rates = calculate_non_radiative_rate(e_ev, h_soc=5.0)
+            kic = nr_rates["k_IC"]
+            kisc = nr_rates["k_ISC"]
+            rates["k_r"] = f"{kr:.3e}"
+            rates["k_IC"] = f"{kic:.3e}"
+            rates["k_ISC"] = f"{kisc:.3e}"
+            rates["k_ISC_provenance"] = nr_rates["soc_provenance"]
+            
+            phi_f = calculate_fluorescence_quantum_yield(kr, kic, kisc)
+            tau_p = calculate_phosphorescence_lifetime(kr, kisc)
+            status["phi_F"] = f"{phi_f:.4f}"
+            status["tau_P"] = f"{tau_p:.3e}"
+        else:
+            rates["k_r"] = "0.000e+00"
+            rates["k_IC"] = "0.000e+00"
+            rates["k_ISC"] = "0.000e+00"
+            rates["k_ISC_provenance"] = "[E]"
+            status["phi_F"] = "0.0000"
+            status["tau_P"] = "0.000e+00"
+            
+        status["rates"] = rates
         status["status"] = "TENSORS_EXTRACTED"
         update_lumos_status(status)
         

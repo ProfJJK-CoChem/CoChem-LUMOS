@@ -248,56 +248,94 @@ def route_to_aimnet2_silo(trajectories: List[str], solvent: str = "water", symbo
         env["CUDA_MPS_PIPE_DIRECTORY"] = "/tmp/nvidia-mps"
         env["CUDA_MPS_LOG_DIRECTORY"] = "/tmp/nvidia-log"
 
-    cmd = [
-        sys.executable, "-c",
-        f"import logging; logging.basicConfig(level=logging.INFO); "
-        f"logging.info('[NODE Worker] Executing {len(trajectories)} trajectories in {solvent} solvent.')"
-    ]
-    try:
-        proc = subprocess.run(cmd, capture_output=True, text=True, timeout=15, check=True, env=env)
-        logger.info(f"NODE AIMNet2 Silo dispatched successfully. Output: {proc.stdout.strip()}")
-        return True
-    except subprocess.TimeoutExpired as e:
-        logger.error(f"NODE AIMNet2 Silo dispatch timed out: {e}")
-        return False
-    except subprocess.CalledProcessError as e:
-        logger.error(f"NODE AIMNet2 Silo dispatch failed: {e.stderr}")
-        return False
+    # Enforce Anti-Spoofing: Use actual physical backend (xTB) instead of mocks.
+    # AIMNet2 is preferred, but xTB GFN2 provides a rigorous mathematical baseline.
+    for traj in trajectories:
+        try:
+            cmd = [
+                "xtb", traj, "--omd", "--time", "1.0", "--step", "2.0", "--temp", "298"
+            ]
+            if solvent != "water":
+                cmd.extend(["--alpb", solvent])
+                
+            proc = subprocess.run(
+                cmd, capture_output=True, text=True, timeout=600, check=True, env=env,
+                cwd=str(Path(traj).parent)
+            )
+            logger.info(f"[NODE Worker] xTB Molecular Dynamics (GFN2) completed for {Path(traj).name}.")
+        except FileNotFoundError:
+            raise NotImplementedError(
+                "[ANTI-SPOOFING] Physical backend (xTB/AIMNet2) is required for non-adiabatic "
+                "dynamics but is not installed in the system PATH. "
+                "Mocking computational chemistry results is strictly prohibited."
+            )
+        except subprocess.TimeoutExpired as e:
+            logger.error(f"[NODE Worker] xTB MD timed out for {traj}: {e}")
+            return False
+        except subprocess.CalledProcessError as e:
+            logger.error(f"[NODE Worker] xTB MD failed for {traj}. Exit Code: {e.returncode}\n{e.stderr[-500:]}")
+            return False
+            
+    return True
 
 def evaluate_fssh_switch_probability(state_curr: int, state_target: int, c_coeff: np.ndarray, d_ij: np.ndarray, velocity: np.ndarray, dt: float) -> float:
-    if state_curr == state_target:
-        return 0.0
+    """
+    Evaluates Tully's Fewest Switches Surface Hopping (FSSH) probability.
+    P_{i->j} = max(0, -2 * Re(c_i^* * c_j * (d_ij dot v)) * dt / |c_i|^2)
+    """
     c_i = c_coeff[state_curr]
     c_j = c_coeff[state_target]
-    v_dot_d = np.sum(velocity * d_ij)
-    numerator = -2.0 * np.real(c_i * np.conj(c_j) * v_dot_d) * dt
-    denominator = float(np.abs(c_i)**2)
-    if denominator < 1e-12:
+    
+    # Dot product of non-adiabatic coupling and velocity
+    d_v = np.dot(d_ij.flatten(), velocity.flatten())
+    
+    # Calculate time derivative of the density matrix element
+    b_ij = -2.0 * np.real(np.conj(c_i) * c_j * d_v)
+    
+    pop_i = np.real(np.conj(c_i) * c_i)
+    if pop_i < 1e-12:
         return 0.0
-    return float(np.clip(numerator / denominator, 0.0, 1.0))
+        
+    prob = (b_ij * dt) / pop_i
+    return float(max(0.0, prob))
 
 def optimize_mecp_geometry(coords: np.ndarray, grad_s0_fn: Callable, grad_s1_fn: Callable, energy_s0_fn: Callable, energy_s1_fn: Callable, max_iter: int = 30) -> Tuple[np.ndarray, float]:
-    cur_coords = coords.copy()
-    step_size = 0.02
-    min_gap = np.inf
-    for i in range(max_iter):
-        e0 = energy_s0_fn(cur_coords)
-        e1 = energy_s1_fn(cur_coords)
-        gap = abs(e1 - e0)
-        min_gap = min(min_gap, gap)
-        if gap < 0.01:
-            break
-        g0 = grad_s0_fn(cur_coords)
-        g1 = grad_s1_fn(cur_coords)
-        delta_e = e1 - e0
+    """
+    Optimizes Minimum Energy Crossing Point (MECP) using the projected gradient method.
+    The gradient is composed of a component reducing the energy gap and a component 
+    minimizing the average energy within the crossing seam space.
+    """
+    opt_coords = coords.copy()
+    alpha = 0.1  # Step size for energy minimization
+    beta = 0.5   # Step size for gap minimization
+    
+    for _ in range(max_iter):
+        e0 = energy_s0_fn(opt_coords)
+        e1 = energy_s1_fn(opt_coords)
+        g0 = grad_s0_fn(opt_coords)
+        g1 = grad_s1_fn(opt_coords)
+        
+        gap = e1 - e0
         g_diff = g1 - g0
-        norm_diff = max(np.linalg.norm(g_diff), 1e-8)
-        x_u = g_diff / norm_diff
+        diff_norm_sq = np.sum(g_diff**2)
+        
+        if diff_norm_sq < 1e-12:
+            g_diff_hat = np.zeros_like(g_diff)
+            step_gap = np.zeros_like(g_diff)
+        else:
+            g_diff_hat = g_diff / np.sqrt(diff_norm_sq)
+            step_gap = - (gap / diff_norm_sq) * g_diff
+            
         g_mean = 0.5 * (g0 + g1)
-        g_mean_perp = g_mean - np.sum(g_mean * x_u) * x_u
-        g_mecp = delta_e * x_u + g_mean_perp
-        cur_coords -= step_size * g_mecp
-    return cur_coords, float(min_gap)
+        g_mean_proj = g_mean - np.sum(g_mean * g_diff_hat) * g_diff_hat
+        
+        opt_coords += alpha * (-g_mean_proj) + beta * step_gap
+        
+        if abs(gap) < 1e-4 and np.linalg.norm(g_mean_proj) < 1e-4:
+            break
+            
+    final_e_mean = 0.5 * (energy_s0_fn(opt_coords) + energy_s1_fn(opt_coords))
+    return opt_coords, float(final_e_mean)
 
 def write_lumos_hdf5_state(h5_path: Path, trajectories: List[str], status_data: LumosStatus) -> None:
     h5_path.parent.mkdir(parents=True, exist_ok=True)
@@ -346,29 +384,40 @@ def main():
         sys.exit(1)
         
     freqs = np.loadtxt(freqs_path)
+    
+    # Anti-Spoofing Directive: Validate frequencies
+    if np.all(freqs == 1000.0) or np.allclose(freqs, freqs[0]):
+        logger.error(f"[ANTI-SPOOFING] Hallucinated/dummy uniform frequencies detected in {freqs_path}. This corrupts Wigner sampling.")
+        sys.exit(1)
+        
     trajectories = generate_wigner_samples(config.input_xyz, num_samples=num_samples, temperature=config.temp_k, freqs=freqs, tier=config.tier)
     
-    if route_to_aimnet2_silo(trajectories, solvent=config.solvent, symbols=symbols):
-        workspace_dir = get_artifact_dir()
+    try:
+        route_to_aimnet2_silo(trajectories, solvent=config.solvent, symbols=symbols)
+    except NotImplementedError as e:
+        logger.error(str(e))
+        sys.exit(1)
         
-        status = LumosStatus(
-            status="DYNAMICS_IN_PROGRESS",
-            pump_nm=config.pump_nm,
-            target_temp_k=config.temp_k,
-            solvent=config.solvent,
-            tier_level=config.tier,
-            gpu_crossover_mode=crossover_mode,
-            basis_functions=n_bf,
-            trajectories_tracked=len(trajectories),
-            output_dir=str(workspace_dir / "LUMOS_Workspace" / "Dynamics_Out")
-        )
+    workspace_dir = get_artifact_dir()
+    
+    status = LumosStatus(
+        status="DYNAMICS_IN_PROGRESS",
+        pump_nm=config.pump_nm,
+        target_temp_k=config.temp_k,
+        solvent=config.solvent,
+        tier_level=config.tier,
+        gpu_crossover_mode=crossover_mode,
+        basis_functions=n_bf,
+        trajectories_tracked=len(trajectories),
+        output_dir=str(workspace_dir / "LUMOS_Workspace" / "Dynamics_Out")
+    )
+    
+    status_path = workspace_dir / "LUMOS_Refinement_Status.json"
+    with open(status_path, "w") as f:
+        f.write(status.model_dump_json(indent=4))
         
-        status_path = workspace_dir / "LUMOS_Refinement_Status.json"
-        with open(status_path, "w") as f:
-            f.write(status.model_dump_json(indent=4))
-            
-        write_lumos_hdf5_state(workspace_dir / "cochem_state.h5", trajectories, status)
-        logger.info("LUMOS Stage 1.x Complete. Refinement Status locked.")
+    write_lumos_hdf5_state(workspace_dir / "cochem_state.h5", trajectories, status)
+    logger.info("LUMOS Stage 1.x Complete. Refinement Status locked.")
 
 if __name__ == "__main__":
     main()

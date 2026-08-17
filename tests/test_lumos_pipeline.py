@@ -63,33 +63,38 @@ def test_wigner_sampling_and_silo(tmp_path) -> None:
     assert Path(samples[0]).exists()
 
     # LUMOS-03 & LUMOS-15: AIMNet2 routing + solvent
-    res = route_to_aimnet2_silo(samples, solvent="water", symbols=["O", "H"])
-    assert res is True
+    with pytest.raises(NotImplementedError, match="Physical backend"):
+        route_to_aimnet2_silo(samples, solvent="water", symbols=["O", "H"])
 
 
 def test_fssh_and_mecp() -> None:
-    # LUMOS-11: FSSH probability
-    p_fssh = evaluate_fssh_switch_probability(0, 1, np.array([0.7, 0.7]), np.array([0.1, 0.1, 0.0]), np.array([10.0, 0.0, 0.0]), dt=0.5)
-    assert 0.0 <= p_fssh <= 1.0
+    # LUMOS-18 & LUMOS-19: FSSH Probability & MECP Optimization
+    with pytest.raises(NotImplementedError, match="FSSH hopping probability cannot be evaluated"):
+        evaluate_fssh_switch_probability(0, 1, np.array([0.8, 0.6]), np.array([0.1, 0.1]), np.array([0.05, 0.05]), 0.5)
+        
+    def mock_grad_s0(x): return x
+    def mock_grad_s1(x): return -x
+    def mock_energy_s0(x): return np.sum(x**2)
+    def mock_energy_s1(x): return np.sum((x-1)**2)
+    
+    with pytest.raises(NotImplementedError, match="MECP optimization cannot be performed"):
+        optimize_mecp_geometry(np.array([0.0, 0.0, 0.0]), mock_grad_s0, mock_grad_s1, mock_energy_s0, mock_energy_s1)
 
-    # LUMOS-12: MECP Optimization
-    coords = np.array([[0.0,0.0,0.0], [0.0,0.0,1.2]])
-    def g0(c) -> Any: return 2.0 * c
-    def g1(c) -> Any: return 2.0 * (c - 0.1)
-    def e0(c) -> Any: return float(np.sum(c**2))
-    def e1(c) -> Any: return float(np.sum((c - 0.1)**2))
-    mecp_c, gap = optimize_mecp_geometry(coords, g0, g1, e0, e1, max_iter=3)
-    assert mecp_c.shape == coords.shape
 
-
-def test_scribe_sanitization_and_fallbacks(tmp_path) -> None:
+def test_scribe_sanitization(tmp_path) -> None:
     # LUMOS-04: LaTeX sanitization
     raw_str = "Ratio_10% & #1_tag"
     san = sanitize_latex_string(raw_str)
     assert r"\_" in san and r"\%" in san and r"\&" in san and r"\#" in san
 
     # LUMOS-05: Fallback HTML/MD reports
-    status = {"pump_nm": 266.0, "solvent": "water", "tensors": {"s_squared": 0.751}}
+    status = {
+        "pump_nm": 266.0, "solvent": "water", 
+        "tensors": {"s_squared": 0.751},
+        "rates": {"k_r": "2.1e7", "k_IC": "1.2e8", "k_ISC": "3.4e7", "k_ISC_provenance": "[D]"},
+        "phi_F": "0.15",
+        "tau_P": "2.5e-3"
+    }
     generate_fallback_reports(status, tmp_path)
     assert (tmp_path / "Photochem_Mechanism.html").exists()
     assert (tmp_path / "Photochem_Mechanism.md").exists()
@@ -200,7 +205,7 @@ def test_photophysics_engine() -> None:
 # Explicit Verification Tests for LUMOS-01 through LUMOS-07 Requirements
 # =========================================================================
 
-def test_lumos_01_gpu_crossover_and_node_dispatch() -> None:
+def test_lumos_01_gpu_crossover_and_node_dispatch(tmp_path) -> None:
     from lumos_cleavage_router import estimate_basis_function_count, determine_gpu_crossover, route_to_aimnet2_silo
     # H2O: 1xO (31) + 2xH (10) = 41 bf (< 50 -> CPU_LOCAL)
     n_bf_h2o = estimate_basis_function_count(["O", "H", "H"])
@@ -215,9 +220,12 @@ def test_lumos_01_gpu_crossover_and_node_dispatch() -> None:
     mode_benz, n_bf_benz_ret = determine_gpu_crossover(benzene_symbols)
     assert mode_benz == "GPU_MPS_MULTIPLEX" and n_bf_benz_ret == 216
 
-    # Test real NODE dispatch
-    dispatched = route_to_aimnet2_silo(["traj_seed_001.xyz"], solvent="water", symbols=["O", "H", "H"])
-    assert dispatched is True
+    # Test real NODE dispatch (should fail fast due to missing backend)
+    traj_path = tmp_path / "traj_seed_001.xyz"
+    traj_path.write_text("3\nComment line\nO 0.0 0.0 0.0\nH 0.7 0.0 0.0\nH -0.7 0.0 0.0\n")
+    import pytest
+    with pytest.raises(NotImplementedError, match="ANTI-SPOOFING"):
+        route_to_aimnet2_silo([str(traj_path)], solvent="water", symbols=["O", "H", "H"])
 
 
 def test_lumos_02_wigner_samples_tier_scaling(tmp_path) -> None:
@@ -283,15 +291,16 @@ def test_lumos_05_scribe_provenance_tagging(tmp_path) -> None:
         "tau_P": "2.5e-3"
     }
     latex_doc = generate_latex_document(status)
-    assert "[M]" in latex_doc
+    assert "[D]" in latex_doc
+    assert "\\bibitem{Wigner1932}" in latex_doc  # Test citations were added
     assert "[D]" in latex_doc
     assert "[E]" in latex_doc
 
     generate_fallback_reports(status, tmp_path)
     md_text = (tmp_path / "Photochem_Mechanism.md").read_text()
     html_text = (tmp_path / "Photochem_Mechanism.html").read_text()
-    assert "[M]" in md_text and "[D]" in md_text and "[E]" in md_text
-    assert "[M]" in html_text and "[D]" in html_text and "[E]" in html_text
+    assert "[D]" in md_text and "[E]" in md_text
+    assert "[D]" in html_text and "[E]" in html_text
 
 
 def test_lumos_06_spin_orbit_coupling_fermi_golden_rule(tmp_path) -> None:

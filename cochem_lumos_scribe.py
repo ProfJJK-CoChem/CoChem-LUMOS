@@ -1,5 +1,3 @@
-import hashlib
-from typing import Any, Dict, List, Optional
 #!/usr/bin/env python3
 """
 CoChem-LUMOS: Automated LaTeX & HTML Scribe
@@ -11,11 +9,15 @@ fallback report artifacts when pdflatex is missing or encounters errors.
 
 import os
 import re
+import sys
 import json
 import subprocess
 import logging
-logger = logging.getLogger(__name__)
+import hashlib
 from pathlib import Path
+from typing import Any, Dict, List, Optional
+
+logger = logging.getLogger(__name__)
 
 class Colors:
     OKCYAN = '\033[96m'
@@ -26,6 +28,16 @@ class Colors:
 
 logging.basicConfig(filename='cochem_lumos_scribe.log', level=logging.INFO)
 
+def calculate_artifact_sha256(filepath: str | Path) -> str:
+    """Calculates SHA-256 hash of a computational artifact."""
+    p = Path(filepath)
+    if not p.exists():
+        raise FileNotFoundError(f"Artifact file not found: {filepath}")
+    hasher = hashlib.sha256()
+    with open(p, "rb") as f:
+        while chunk := f.read(65536):
+            hasher.update(chunk)
+    return hasher.hexdigest()
 
 def sanitize_latex_string(text: str) -> str:
     r"""
@@ -50,24 +62,26 @@ def sanitize_latex_string(text: str) -> str:
     pattern = re.compile('|'.join(re.escape(k) for k in latex_special.keys()))
     return pattern.sub(lambda m: latex_special[m.group(0)], text)
 
-
-# Alias for caller convenience
 sanitize_latex = sanitize_latex_string
-
 
 def generate_latex_document(status: dict) -> str:
     """Generates the raw LaTeX string, safely interpolating and sanitizing physics data with provenance tags [M], [D], [E]."""
-    pump_nm = sanitize_latex_string(status.get("pump_nm", "Unknown"))
+    if "tensors" not in status or "rates" not in status:
+        raise ValueError("[ANTI-SPOOFING] Refinement status missing required physics data (tensors/rates). Fallbacks/hallucinations are strictly prohibited.")
+        
+    pump_nm = sanitize_latex_string(str(status.get("pump_nm", "Unknown")))
     solvent = sanitize_latex_string(status.get("solvent", "water"))
-    tensors = status.get("tensors", {})
-    s2 = sanitize_latex_string(tensors.get("s_squared", "N/A"))
-    rates = status.get("rates", {})
-    k_r = sanitize_latex_string(rates.get("k_r", "1.5e7"))
-    k_ic = sanitize_latex_string(rates.get("k_IC", "1.0e8"))
-    k_isc = sanitize_latex_string(rates.get("k_ISC", "2.0e7"))
+    tensors = status["tensors"]
+    s2 = sanitize_latex_string(str(tensors["s_squared"]))
+    rates = status["rates"]
+    k_r = sanitize_latex_string(str(rates["k_r"]))
+    k_ic = sanitize_latex_string(str(rates["k_IC"]))
+    k_isc = sanitize_latex_string(str(rates["k_ISC"]))
     soc_tag = sanitize_latex_string(rates.get("k_ISC_provenance", "[E]"))
-    phi_f = sanitize_latex_string(status.get("phi_F", "0.13"))
-    tau_p = sanitize_latex_string(status.get("tau_P", "1.2e-3"))
+    phi_f = sanitize_latex_string(str(status["phi_F"]))
+    tau_p = sanitize_latex_string(str(status["tau_P"]))
+
+    soc_assumption = " (Estimated using default SOC = 5.0 cm$^{-1}$)" if "[E]" in soc_tag else ""
     
     tex_template = r"""\documentclass[11pt, a4paper]{article}
 \usepackage{amsmath}
@@ -82,21 +96,30 @@ def generate_latex_document(status: dict) -> str:
 \maketitle
 
 \section{Methodology}
-Open-shell photo-cleavage was simulated using a %PUMP%~nm [M] excitation pulse in %SOLVENT% [M] solvent. 
-Wigner phase-space sampling generated the initial conditions, which were subsequently propagated via the AIMNet2 neural network potential.
+Open-shell photo-cleavage was simulated using a %PUMP%~nm [D] excitation pulse in %SOLVENT% [D] solvent. 
+Wigner phase-space sampling \cite{Wigner1932} generated the initial conditions, which were subsequently propagated via the AIMNet2 neural network potential \cite{AIMNet2}.
 
 \section{Spin-State Validation \& Photophysics}
-Broken-symmetry DFT was utilized to extract the final EPR tensors. 
+Broken-symmetry DFT \cite{ORCA6} was utilized to extract the final EPR tensors. 
 The expectation value of the spin squared operator was explicitly calculated to monitor spin contamination:
     \begin{equation}
     \langle S^2 \rangle = %S2% \text{ [D]}
 \end{equation}
 
-Radiative decay rate constant $k_r = %KR% \text{ s}^{-1} \text{ [D]}$, internal conversion rate $k_{\text{IC}} = %KIC% \text{ s}^{-1} \text{ [E]}$, and intersystem crossing rate $k_{\text{ISC}} = %KISC% \text{ s}^{-1} \text{ %SOC_TAG%}$.
+Radiative decay rate constant $k_r = %KR% \text{ s}^{-1} \text{ [D]}$, internal conversion rate $k_{\text{IC}} = %KIC% \text{ s}^{-1} \text{ [E]}$, and intersystem crossing rate $k_{\text{ISC}} = %KISC% \text{ s}^{-1} \text{ %SOC_TAG%}%SOC_ASSUMPTION%.
 Fluorescence quantum yield $\Phi_F = %PHIF% \text{ [D]}$ and phosphorescence lifetime $\tau_P = %TAUP% \text{ s [D]}$.
 
 \section{Conclusion}
 The tensor and photophysics data with mandatory provenance tags have been serialized to \texttt{cochem\_state.h5} and are ready for experimental matching.
+
+\begin{thebibliography}{9}
+\bibitem{Wigner1932}
+E. Wigner, \textit{On the Quantum Correction For Thermodynamic Equilibrium}, Phys. Rev. \textbf{40}, 749 (1932).
+\bibitem{AIMNet2}
+A. E. Roitberg et al., \textit{AIMNet2: A General-Purpose Neural Network Potential}, ChemRxiv (2023).
+\bibitem{ORCA6}
+F. Neese et al., \textit{The ORCA quantum chemistry program package}, J. Chem. Phys. \textbf{152}, 224108 (2020).
+\end{thebibliography}
 
 \end{document}
 """
@@ -107,51 +130,61 @@ The tensor and photophysics data with mandatory provenance tags have been serial
     tex_template = tex_template.replace("%KIC%", k_ic)
     tex_template = tex_template.replace("%KISC%", k_isc)
     tex_template = tex_template.replace("%SOC_TAG%", soc_tag)
+    tex_template = tex_template.replace("%SOC_ASSUMPTION%", soc_assumption)
     tex_template = tex_template.replace("%PHIF%", phi_f)
     tex_template = tex_template.replace("%TAUP%", tau_p)
     return tex_template
-
 
 def generate_fallback_reports(status: dict, workspace_dir: Path) -> Any:
     """
     Generates standalone HTML and Markdown reports with mandatory provenance tags [M], [D], [E].
     """
-    pump_nm = status.get("pump_nm", "Unknown")
-    solvent = status.get("solvent", "water")
-    tensors = status.get("tensors", {})
-    s2 = tensors.get("s_squared", "N/A")
-    rates = status.get("rates", {})
-    k_r = rates.get("k_r", "1.5e7")
-    k_ic = rates.get("k_IC", "1.0e8")
-    k_isc = rates.get("k_ISC", "2.0e7")
-    soc_tag = rates.get("k_ISC_provenance", "[E]")
-    phi_f = status.get("phi_F", "0.13")
-    tau_p = status.get("tau_P", "1.2e-3")
+    if "tensors" not in status or "rates" not in status:
+        raise ValueError("[ANTI-SPOOFING] Refinement status missing required physics data (tensors/rates). Fallbacks/hallucinations are strictly prohibited.")
 
-    # Generate Markdown Report with provenance tags
+    pump_nm = str(status.get("pump_nm", "Unknown"))
+    solvent = status.get("solvent", "water")
+    tensors = status["tensors"]
+    s2 = str(tensors["s_squared"])
+    rates = status["rates"]
+    k_r = str(rates["k_r"])
+    k_ic = str(rates["k_IC"])
+    k_isc = str(rates["k_ISC"])
+    soc_tag = rates.get("k_ISC_provenance", "[E]")
+    phi_f = str(status["phi_F"])
+    tau_p = str(status["tau_P"])
+
+    soc_assumption = " *(Estimated using default SOC = 5.0 cm^-1)*" if "[E]" in soc_tag else ""
+
     md_content = f"""# CoChem-LUMOS: Photochemical Cleavage Report
 
-**Excitation Pump:** {pump_nm} nm [M]  
-**Solvent Environment:** {solvent} [M]  
+**Excitation Pump:** {pump_nm} nm [D]  
+**Solvent Environment:** {solvent} [D]  
 **Spin Expectation $\\langle S^2 \\rangle$:** {s2} [D]  
 
 ## Methodology & Photophysics
-Open-shell photo-cleavage was simulated using quantum Wigner phase-space sampling combined with AIMNet2 neural network potential propagation.
+Open-shell photo-cleavage was simulated using quantum Wigner phase-space sampling combined with AIMNet2 neural network potential propagation. Broken-symmetry DFT via ORCA was utilized to extract final EPR tensors.
 
 - **Radiative Decay Rate $k_r$:** {k_r} s^-1 [D]
 - **Internal Conversion Rate $k_{{IC}}$:** {k_ic} s^-1 [E]
-- **Intersystem Crossing Rate $k_{{ISC}}$:** {k_isc} s^-1 {soc_tag}
+- **Intersystem Crossing Rate $k_{{ISC}}$:** {k_isc} s^-1 {soc_tag}{soc_assumption}
 - **Fluorescence Quantum Yield $\\Phi_F$:** {phi_f} [D]
 - **Phosphorescence Lifetime $\\tau_P$:** {tau_p} s [D]
 
 ## Tensor Status
 EPR spin-rotation tensors, isotropic hyperfine constants, and g-tensors have been extracted and verified with [D] provenance tags. All results are stored in `cochem_state.h5`.
+
+## References
+1. E. Wigner, *On the Quantum Correction For Thermodynamic Equilibrium*, Phys. Rev. **40**, 749 (1932).
+2. A. E. Roitberg et al., *AIMNet2: A General-Purpose Neural Network Potential*, ChemRxiv (2023).
+3. F. Neese et al., *The ORCA quantum chemistry program package*, J. Chem. Phys. **152**, 224108 (2020).
 """
     md_path = workspace_dir / "Photochem_Mechanism.md"
     with open(md_path, "w", encoding="utf-8") as f:
         f.write(md_content)
 
-    # Generate HTML Report with provenance tags
+    soc_assumption_html = " <i>(Estimated using default SOC = 5.0 cm<sup>-1</sup>)</i>" if "[E]" in soc_tag else ""
+
     html_content = f"""<!DOCTYPE html>
 <html>
 <head>
@@ -162,23 +195,32 @@ EPR spin-rotation tensors, isotropic hyperfine constants, and g-tensors have bee
         .card {{ background: white; padding: 25px; border-radius: 8px; box-shadow: 0 4px 6px rgba(0,0,0,0.1); max-width: 800px; margin: 0 auto; }}
         h1 {{ color: #2c3e50; border-bottom: 2px solid #3498db; padding-bottom: 10px; }}
         .badge {{ background: #27ae60; color: white; padding: 5px 10px; border-radius: 4px; font-weight: bold; }}
+        .references {{ margin-top: 30px; font-size: 0.9em; color: #666; border-top: 1px solid #ddd; padding-top: 15px; }}
     </style>
 </head>
 <body>
     <div class="card">
         <h1>CoChem-LUMOS Photochemical Mechanism</h1>
-        <p><span class="badge">Pump: {pump_nm} nm [M]</span> <span class="badge">Solvent: {solvent} [M]</span></p>
+        <p><span class="badge">Pump: {pump_nm} nm [D]</span> <span class="badge">Solvent: {solvent} [D]</span></p>
         <h2>Methodology & Spin Validation</h2>
-        <p>Quantum Wigner trajectories propagated via AIMNet2 FSSH dynamics. Spin expectation value: <b>&lang;S<sup>2</sup>&rang; = {s2} [D]</b>.</p>
+        <p>Quantum Wigner trajectories propagated via AIMNet2 FSSH dynamics. Broken-symmetry DFT via ORCA was utilized. Spin expectation value: <b>&lang;S<sup>2</sup>&rang; = {s2} [D]</b>.</p>
         <h3>Photophysics Rates & Lifetimes</h3>
         <ul>
             <li>Radiative decay rate k<sub>r</sub>: <b>{k_r} s<sup>-1</sup> [D]</b></li>
             <li>Internal conversion k<sub>IC</sub>: <b>{k_ic} s<sup>-1</sup> [E]</b></li>
-            <li>Intersystem crossing k<sub>ISC</sub>: <b>{k_isc} s<sup>-1</sup> {soc_tag}</b></li>
+            <li>Intersystem crossing k<sub>ISC</sub>: <b>{k_isc} s<sup>-1</sup> {soc_tag}{soc_assumption_html}</b></li>
             <li>Fluorescence quantum yield &Phi;<sub>F</sub>: <b>{phi_f} [D]</b></li>
             <li>Phosphorescence lifetime &tau;<sub>P</sub>: <b>{tau_p} s [D]</b></li>
         </ul>
         <p>Full tensor datasets serialized to <code>cochem_state.h5</code>.</p>
+        <div class="references">
+            <h3>References</h3>
+            <ol>
+                <li>E. Wigner, <i>On the Quantum Correction For Thermodynamic Equilibrium</i>, Phys. Rev. <b>40</b>, 749 (1932).</li>
+                <li>A. E. Roitberg et al., <i>AIMNet2: A General-Purpose Neural Network Potential</i>, ChemRxiv (2023).</li>
+                <li>F. Neese et al., <i>The ORCA quantum chemistry program package</i>, J. Chem. Phys. <b>152</b>, 224108 (2020).</li>
+            </ol>
+        </div>
     </div>
 </body>
 </html>
@@ -187,8 +229,7 @@ EPR spin-rotation tensors, isotropic hyperfine constants, and g-tensors have bee
     with open(html_path, "w", encoding="utf-8") as f:
         f.write(html_content)
 
-        logger.info(f"{Colors.OKGREEN}✅ Fallback HTML & Markdown reports with [M], [D], [E] provenance tags generated successfully at {html_path.name}{Colors.ENDC}")
-
+    logger.info(f"{Colors.OKGREEN}✅ Fallback HTML & Markdown reports with [M], [D], [E] provenance tags generated successfully at {html_path.name}{Colors.ENDC}")
 
 def main() -> Any:
     logger.info(f"\n{Colors.OKCYAN}--- CoChem-LUMOS: Scribe Output Generator ---{Colors.ENDC}")
@@ -212,10 +253,8 @@ def main() -> Any:
         f.write(latex_content)
     logger.info(f"{Colors.OKGREEN}✅ LaTeX payload generated: {tex_out.name}{Colors.ENDC}")
 
-    # Generate fallback HTML/MD reports unconditionally so user always has valid reports
     generate_fallback_reports(status, workspace_dir)
 
-    # Attempt pdflatex compilation if available
     try:
         logger.info("⚙️  Attempting pdflatex compilation...")
         subprocess.run(["pdflatex", "-interaction=nonstopmode", str(tex_out)], check=True, timeout=300,
@@ -230,16 +269,5 @@ def main() -> Any:
         logger.info(f"{Colors.WARNING}⚠️ LaTeX compilation encountered errors. Fallback HTML/Markdown preserved.{Colors.ENDC}")
         logging.error(f"pdflatex error:\n{e.stdout}")
 
-
 if __name__ == "__main__":
     main()
-def calculate_artifact_sha256(filepath: str | Path) -> str:
-    """Calculates SHA-256 hash of a computational artifact."""
-    p = Path(filepath)
-    if not p.exists():
-        raise FileNotFoundError(f"Artifact file not found: {filepath}")
-    hasher = hashlib.sha256()
-    with open(p, "rb") as f:
-        while chunk := f.read(65536):
-            hasher.update(chunk)
-    return hasher.hexdigest()
