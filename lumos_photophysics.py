@@ -73,19 +73,9 @@ def calculate_non_radiative_rate(delta_e_ev: float, h_soc: Union[float, np.ndarr
     using Fermi's Golden Rule and Energy Gap Law with real or estimated SOC matrix elements.
     """
     if delta_e_ev <= 0:
-        return {
-            "k_IC": 1e12, "k_IC_provenance": "[E]",
-            "k_ISC": 1e11, "k_ISC_provenance": "[E]",
-            "k_nr": 1e12, "k_nr_provenance": "[E]",
-            "h_soc_cm1": 5.0, "provenance": "[E]"
-        }
+        raise ValueError("[MISSING DATA] Invalid or missing delta_e_ev for non-radiative rate calculation.")
     if hw_max_ev <= 0.0:
-        return {
-            "k_IC": 0.0, "k_IC_provenance": "[E]",
-            "k_ISC": 0.0, "k_ISC_provenance": "[E]",
-            "k_nr": 0.0, "k_nr_provenance": "[E]",
-            "h_soc_cm1": 0.0, "provenance": "[E]"
-        }
+        raise ValueError("[MISSING DATA] Invalid or missing hw_max_ev for non-radiative rate calculation.")
 
     if isinstance(h_soc, (list, tuple, np.ndarray)):
         h_soc_arr = np.asarray(h_soc, dtype=np.float64)

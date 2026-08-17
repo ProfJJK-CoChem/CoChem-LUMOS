@@ -2,7 +2,11 @@ import json
 import h5py
 import sys
 import os
-sys.path.insert(0, r"D:\Gdrive\__CoChem\GitHub-Repo")
+from pathlib import Path
+
+REPO_ROOT = Path(__file__).resolve().parent
+ECOSYSTEM_ROOT = REPO_ROOT.parent
+sys.path.insert(0, str(ECOSYSTEM_ROOT))
 
 def test_meci_provenance():
     print("Running Adversarial Audit 160: OpenAlex Conical Intersection Provenance")
@@ -13,7 +17,7 @@ def test_meci_provenance():
         print(f"FAILED: Could not import cochem_lumos.core.metadata. Error: {e}")
         print("Null Response Check: System outputs an empty citation block for the CI search (module does not exist).")
         print("Audit Result: FAILS the provenance audit.")
-        return
+        raise e
 
     # If by some miracle it exists
     print("Module found. Checking for Martinez OpenAlex DOI...")

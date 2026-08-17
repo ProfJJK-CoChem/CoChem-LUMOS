@@ -116,6 +116,8 @@ def test_tensor_extraction_and_convolution(tmp_path) -> None:
     # LUMOS-08 & LUMOS-14: Prop file parsing & EPR/g-tensor
     prop_file = tmp_path / "test.prop"
     prop_file.write_text("The g-matrix: 2.0 0.0 0.0 0.0 2.0 0.0 0.0 0.0 2.0\nIsotropic Fermi contact coupling : 14.2")
+    out_file = tmp_path / "test.out"
+    out_file.write_text("Expectation value of <S**2> : 0.7501")
     tensors = extract_radical_tensors(tmp_path)
     assert "g_tensor" in tensors and "spin_rotation_mhz" in tensors
 

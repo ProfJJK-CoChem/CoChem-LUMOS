@@ -220,15 +220,7 @@ def generate_mass_spectrum(mol_input: Any = None, electron_impact_ev: float = 70
                 "ker_ev": 0.05
             }
     else:
-        # Fallback dynamic fragment generation when RDKit is unavailable or for simple mass
-        mw_rounded = 72.0
-        fragments = {
-            72.0: {"mz": 72.0, "intensity": 40.0, "formula": "[C5H12]+.", "electron_type": "odd", "cleavage_type": "molecular_ion", "bde_ev": 0.0, "bde_provenance": "[M]", "ker_ev": 0.05},
-            57.0: {"mz": 57.0, "intensity": 100.0, "formula": "[C4H9]+", "electron_type": "even", "cleavage_type": "alpha_cleavage", "bde_ev": 3.6, "bde_provenance": "[E]", "ker_ev": 0.30},
-            43.0: {"mz": 43.0, "intensity": 80.0, "formula": "[C3H7]+", "electron_type": "even", "cleavage_type": "alpha_cleavage", "bde_ev": 3.4, "bde_provenance": "[E]", "ker_ev": 0.40},
-            29.0: {"mz": 29.0, "intensity": 35.0, "formula": "[C2H5]+", "electron_type": "even", "cleavage_type": "alkyl_loss", "bde_ev": 3.8, "bde_provenance": "[E]", "ker_ev": 0.25},
-            15.0: {"mz": 15.0, "intensity": 15.0, "formula": "[CH3]+", "electron_type": "even", "cleavage_type": "alkyl_loss", "bde_ev": 4.1, "bde_provenance": "[E]", "ker_ev": 0.50}
-        }
+        raise ValueError("[MISSING DATA] RDKit is unavailable or valid molecular input was not provided. Cannot compute mass spectrum.")
 
     # Normalize intensities so maximum (base peak) = 100.0
     max_int = max(v["intensity"] for v in fragments.values()) if fragments else 1.0

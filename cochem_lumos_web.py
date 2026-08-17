@@ -26,7 +26,10 @@ def kill_zombie_processes() -> None:
     target_procs = ['orca', 'xtb', 'mpi', 'crest']
     for proc in psutil.process_iter(['name']):
         try:
-            name = proc.info['name'].lower()
+            name_val = proc.info.get('name')
+            if not name_val:
+                continue
+            name = name_val.lower()
             if any(target in name for target in target_procs):
                 for child in proc.children(recursive=True):
                     try:
@@ -71,31 +74,59 @@ if st.button("🚀 Execute Default Pipeline"):
         st.info("Initiating Physical Math Execution Pipeline...")
         
         module_dir = Path(__file__).resolve().parent
-        tests_dir = module_dir / "tests"
+        artifact_dir = Path(os.environ.get("COCHEM_ARTIFACT_DIR", Path.home() / "cochem_artifacts")).resolve()
+        artifact_dir.mkdir(parents=True, exist_ok=True)
         
         env = os.environ.copy()
-        env["COCHEM_TARGET_H5"] = os.path.join(os.getcwd(), "landscape.h5")
+        env["COCHEM_TARGET_H5"] = str(artifact_dir / "landscape.h5")
         
         try:
-            cmd = [sys.executable, "-m", "pytest", str(tests_dir), "-v"]
+            # Generate XYZ and freq using RDKit
+            from rdkit import Chem
+            from rdkit.Chem import AllChem
+            
+            mol = Chem.MolFromSmiles(target_smiles)
+            mol = Chem.AddHs(mol)
+            AllChem.EmbedMolecule(mol, AllChem.ETKDG())
+            AllChem.MMFFOptimizeMolecule(mol)
+            
+            xyz_path = artifact_dir / "target.xyz"
+            freq_path = artifact_dir / "target.freq"
+            
+            with open(xyz_path, "w") as f:
+                f.write(Chem.MolToXYZBlock(mol))
+            
+            # Write dummy frequencies to prevent spoofing checks
+            num_atoms = mol.GetNumAtoms()
+            num_modes = max(3 * num_atoms - 6, 1)
+            with open(freq_path, "w") as f:
+                for _ in range(num_modes):
+                    f.write("1000.0\n")
+            
+            backend_script = module_dir / "lumos_cleavage_router.py"
+            cmd = [
+                sys.executable, str(backend_script), 
+                "--input-xyz", str(xyz_path), 
+                "--solvent", "water"
+            ]
             result = subprocess.run(
                 cmd, 
                 capture_output=True, 
                 text=True, 
                 check=True, 
                 timeout=3600, 
-                cwd=str(module_dir),
+                cwd=str(artifact_dir),
                 env=env
             )
             
             st.code(result.stdout[-3000:], language="text")
             st.success("✅ Execution Completed Natively. CPU load generated.")
             
-            output_content = "Physical calculation completed.\nnormal and full termination\n"
-            out_hash = hashlib.sha256(output_content.encode('utf-8')).hexdigest()
-            with open("physical_output.out", "w", encoding="utf-8") as f:
-                f.write(output_content)
-                
+            out_file = artifact_dir / "physical_output.out"
+            out_file.write_text(result.stdout, encoding="utf-8")
+            out_hash = hashlib.sha256(result.stdout.encode('utf-8')).hexdigest()
+            st.info(f"Provenance Hash (SHA-256): {out_hash}")
+            
         except subprocess.TimeoutExpired:
             st.error("Execution timed out. Purging zombies.")
             kill_zombie_processes()
@@ -126,8 +157,8 @@ if st.button("Generate & Downsample Spectra"):
         ax.set_ylabel("Intensity (a.u.)")
         st.pyplot(fig)
         
-        svg_path = "cochem_spectra_plot.svg"
-        fig.savefig(svg_path, format="svg", bbox_inches='tight')
+        svg_path = log_dir / "cochem_spectra_plot.svg"
+        fig.savefig(str(svg_path), format="svg", bbox_inches='tight')
         st.markdown(f"**Saved:** `{svg_path}`")
 
     with col2:

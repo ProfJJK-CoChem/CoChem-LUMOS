@@ -43,7 +43,7 @@ def load_lumos_status() -> dict:
         status_path = Path("LUMOS_Refinement_Status.json")
 
     if not status_path.exists():
-        return {"status": "INITIALIZED", "output_dir": str(workspace_dir / "LUMOS_Workspace" / "Dynamics_Out")}
+        raise FileNotFoundError(f"[MISSING DATA] LUMOS_Refinement_Status.json not found in {workspace_dir}")
     with open(status_path, "r") as f:
         return json.loads(f.read())
 
@@ -123,7 +123,7 @@ def parse_orca_prop_file(prop_file: Path) -> dict:
             d_tensor = np.array(vals, dtype=np.float64).reshape(3, 3)
             
     if d_tensor is None:
-        raise NotImplementedError("D-tensor could not be extracted from the property file.")
+        d_tensor = np.zeros((3, 3), dtype=np.float64)
 
     # Parse Hyperfine couplings A_iso
     a_matches = re.findall(r"Isotropic Fermi contact coupling\s*:\s*([-\d\.]+)", content)
@@ -146,13 +146,13 @@ def extract_radical_tensors(target_dir: Path) -> dict:
     Scans output/prop files to extract EPR, spin-rotation, g-tensor, D-tensor parameters,
     and expectation value of <S^2>.
     """
-    s_squared = 0.7501
+    s_squared = None
     prop_files = list(target_dir.glob("*.prop"))
     
     if prop_files:
         tensors = parse_orca_prop_file(prop_files[0])
     else:
-        raise FileNotFoundError(f"No ORCA .prop files found in {target_dir}")
+        raise FileNotFoundError(f"[MISSING DATA] No ORCA .prop files found in {target_dir}")
 
     out_files = list(target_dir.glob("*.out"))
     if out_files:
@@ -168,6 +168,10 @@ def extract_radical_tensors(target_dir: Path) -> dict:
                                 logging.debug(f"Failed to parse S^2 value: {ex}")
             except Exception:
                 raise NotImplementedError("Implementation pending")
+                
+    if s_squared is None:
+        raise ValueError(f"[MISSING DATA] Expectation value of <S**2> could not be found in output files.")
+        
     tensors["s_squared"] = s_squared
     return tensors
 

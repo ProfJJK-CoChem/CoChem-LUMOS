@@ -1,16 +1,20 @@
 import sys
+import os
 import asyncio
+from pathlib import Path
 
-sys.path.insert(0, r"D:\Gdrive\__CoChem\GitHub-Repo")
+REPO_ROOT = Path(__file__).resolve().parent
+ECOSYSTEM_ROOT = REPO_ROOT.parent
+sys.path.insert(0, str(ECOSYSTEM_ROOT))
 
-async def test_fc_concurrency():
+def test_fc_concurrency():
     print("Running Adversarial Audit 158: Goal Payload Franck-Condon Grid Concurrency")
     try:
         from cochem_lumos.engine.hpc_dispatcher import HPCDispatcher
     except ImportError as e:
         print(f"FAILED: Could not import cochem_lumos.engine.hpc_dispatcher. Error: {e}")
         print("Audit Result: FAILS the concurrency audit. System cannot dispatch 100,000 FC tasks.")
-        return
+        raise e
 
     dispatcher = HPCDispatcher()
     
@@ -19,7 +23,7 @@ async def test_fc_concurrency():
     
     print(f"Requesting vibronic spectrum evaluation with {num_overlaps} distinct overlaps...")
     try:
-        payloads = await dispatcher.dispatch_fc_overlaps(num_overlaps, chunk_size)
+        payloads = asyncio.run(dispatcher.dispatch_fc_overlaps(num_overlaps, chunk_size))
         print(f"Successfully chunked into {len(payloads)} payloads.")
         print("Audit Result: PASSES the concurrency audit.")
     except AttributeError as e:
@@ -27,4 +31,4 @@ async def test_fc_concurrency():
         print("Audit Result: FAILS the concurrency audit.")
 
 if __name__ == "__main__":
-    asyncio.run(test_fc_concurrency())
+    test_fc_concurrency()

@@ -199,8 +199,8 @@ def main() -> Any:
         status_file = Path("LUMOS_Refinement_Status.json")
 
     if not status_file.exists():
-        logger.info(f"{Colors.WARNING}⚠️ LUMOS Registry missing. Creating default status for scribe.{Colors.ENDC}")
-        status = {"pump_nm": 266.0, "solvent": "water", "tensors": {"s_squared": 0.7501}}
+        logger.error(f"{Colors.FAIL}❌ [MISSING DATA] LUMOS Registry missing. Cannot proceed without physical status data.{Colors.ENDC}")
+        sys.exit(1)
     else:
         with open(status_file, "r") as f:
             status = json.loads(f.read())

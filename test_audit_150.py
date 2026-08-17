@@ -3,11 +3,19 @@ import h5py
 import sys
 import os
 import time
-sys.path.insert(0, r"D:\Gdrive\__CoChem\GitHub-Repo")
+from pathlib import Path
+
+REPO_ROOT = Path(__file__).resolve().parent
+ECOSYSTEM_ROOT = REPO_ROOT.parent
+sys.path.insert(0, str(ECOSYSTEM_ROOT))
 
 def test_sspcm_provenance():
     print("Running Adversarial Audit 150: OpenAlex Excited State Solvation Models")
-    from cochem_lumos.core.metadata import evaluate_excited_state_dipole
+    try:
+        from cochem_lumos.core.metadata import evaluate_excited_state_dipole
+    except ImportError as e:
+        print(f"FAILED: Could not import cochem_lumos.core.metadata. Error: {e}")
+        raise e
     
     # Run the SS-PCM evaluation
     dipole = evaluate_excited_state_dipole(model="SS-PCM")
